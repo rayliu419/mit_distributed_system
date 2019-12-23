@@ -202,6 +202,7 @@ func (cfg *config) start1(i int) {
 		}
 	}()
 
+	// 调用raft.go里的Make函数
 	rf := Make(ends, i, cfg.saved[i], applyCh)
 
 	cfg.mu.Lock()
