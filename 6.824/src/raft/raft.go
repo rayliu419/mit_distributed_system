@@ -94,8 +94,9 @@ type Raft struct {
 	lastheartbeat    time.Time     // 记录上次的心跳时间
 	heartbeattimeout time.Duration // 心跳检测的时间
 	electiontimeout  time.Duration // 选举超时时间
-	heartbeatticker  *time.Ticker  //用于leader周期性激活
-	electionticker   *time.Ticker  // 用于选举的周期性激活
+	heartbeatinteval time.Duration // 用于leader周期性发心跳，在论文中，并没有指明需不需要这个值。只是说在空闲时间发心跳，如果设置为hearttimeout，会有问题。
+	//heartbeatticker  *time.Ticker  //用于leader周期性激活
+	//electionticker   *time.Ticker  // 用于选举的周期性激活
 	leaderid         int           // 当前的leader
 }
 
@@ -161,6 +162,7 @@ type RequestVoteArgs struct {
 	CandidateIndex  int // candidate的index
 	LastLogIndex    int // candidate的最后一条日志的索引
 	LastLogItemTerm int // candidate的最后一条日志的term
+	LogId     int // debug
 }
 
 //
@@ -171,6 +173,7 @@ type RequestVoteReply struct {
 	// Your data here (2A).
 	Term        int  // 这里应该是其他peer当前的term，用于返回给发起投票的candidate更新。
 	VoteGranted bool // 是否收到了同意的投票
+	LogId     int // debug
 }
 
 // ugly，怎么使用golang写的更好
@@ -196,15 +199,16 @@ func LogNewer(candidatelogindex int, candidatelogterm int, mylogindex int, mylog
 // RequestVote处理
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
+	logid := args.LogId
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	DPrintf("sender {index - %v term - %v}, receiver {index - %v term - %v votefor - %v}", args.CandidateIndex, rf.me, args.Term, rf.currentterm, rf.votedfor)
+	//DPrintf("%v : {term - %v votefor - %v}: handle vote from {index - %v term - %v }", rf.me, rf.currentterm, rf.votedfor, args.CandidateIndex, args.Term)
 	if args.Term < rf.currentterm {
-		DPrintf("refuse %v - %v because request term - %v, my term - %v\n", args.CandidateIndex, rf.me, args.Term, rf.currentterm)
+		DPrintf("[%v]- %v %v {term - %v role - %v}： refuse vote {index - %v term - %v }\n", logid, rf.me, rf.currentterm, rf.role, args.CandidateIndex, args.Term)
 		reply.VoteGranted = false
 	} else {
 		if args.Term > rf.currentterm {
-			DPrintf("%v - %v change term because request term - %v, my term - %v\n", args.CandidateIndex, rf.me, args.Term, rf.currentterm)
+			DPrintf("[%v]%v : {term - %v role - %v}: - change term because recevie vote {index - %v term - %v }\n", logid, rf.me, rf.currentterm, rf.role, args.CandidateIndex, args.Term)
 			rf.role = FOLLOWER
 			rf.currentterm = args.Term
 			rf.votedfor = -1
@@ -219,18 +223,23 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		candidatenewer := true
 		if rf.votedfor == -1 || rf.votedfor == args.CandidateIndex {
 			// 没有为最新的term投过票或者投过相同的票了？第二个条件是因为可能出现发送两次请求吗？- 包重复
-			DPrintf("%v - %v votecondition is true because votefor is %v\n", args.CandidateIndex, rf.me, rf.votedfor)
+			//DPrintf("%v - %v votecondition is true because votefor is %v\n", args.CandidateIndex, rf.me, rf.votedfor)
 			voteconditon = true
 		}
 		if voteconditon && candidatenewer {
-			DPrintf("accept %v - %v\n", args.CandidateIndex, rf.me)
+			//DPrintf("accept %v - %v\n", args.CandidateIndex, rf.me)
 			reply.VoteGranted = true
 			rf.votedfor = args.CandidateIndex
 			rf.role = FOLLOWER // 从图表中好像没有这个设置?需要这个地方吗？
 		} else {
-			DPrintf("refuse %v - %v\n", args.CandidateIndex, rf.me)
+			//DPrintf("refuse %v - %v\n", args.CandidateIndex, rf.me)
 			reply.VoteGranted = false
 		}
+	}
+	if reply.VoteGranted {
+		DPrintf("[%v] %v {term - %v role - %v}: accept vote from {index - %v term - %v }", logid, rf.me, rf.currentterm, rf.role, args.CandidateIndex, args.Term)
+	} else {
+		DPrintf("[%v] %v {term - %v role - %v}: refuse vote from {index - %v term - %v }", logid, rf.me, rf.currentterm, rf.role, args.CandidateIndex, args.Term)
 	}
 	reply.Term = rf.currentterm
 }
@@ -265,16 +274,20 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 // that the caller passes the address of the reply struct with &, not
 // the struct itself.
 //
-// RPC这个模块看起来work的方式我还有一些没明白
-// sendRequestVote会阻塞，所以要注意使用goroutine来调用
-// 这里的通信应该是这样的:
-// 例如sendRequestVote()发送出去以后，收到的回复可能是long delay，也可能是丢失或者乱序等，但是不会requestVote()出去,
-// appendEntries()的回应回来，也不会是例如sendRequestVote1()请求出去，sendRequestVote2()的reply回来。
-// 这里的乱序指的是，也不会是例如sendRequestVote1先发，sendRequestVote2后发，但是可能sendRequestVote2的回复先回来。
+/* RPC这个模块看起来work的方式我还有一些没明白
+sendRequestVote会阻塞，所以要注意使用goroutine来调用
+这里的通信问题是:
+1.例如sendRequestVote()发送出去以后，收到的回复可能是long delay，也可能是丢失或者乱序等，但是不会requestVote()出去,
+appendEntries()的回应回来
+2.不会是sendRequestVote1()请求出去，sendRequestVote2()的reply回来。
+3.这里的乱序指的是，sendRequestVote1先发，sendRequestVote2后发，但是可能sendRequestVote2的回复先回来。
+4.考虑到通信都是使用一个端口，是不是上面的理解错误了？testing的代码也需要看，确认这些错误的行为包括哪些。
+*/
 func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
-	DPrintf("sendRequestVote %v -> %v request, time - %v, args - %+v \n", args.CandidateIndex, server, time.Since(programestarttime), args)
+	logid := args.LogId
+	DPrintf("[%v] %v: sendRequestVote to %v request, time - %v, args - %+v\n", logid, args.CandidateIndex, server, time.Since(programestarttime), args)
 	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
-	DPrintf("sendRequestVote %v -> %v reply, time - %v, args - %+v reply - %+v\n", args.CandidateIndex, server, time.Since(programestarttime), args, reply)
+	DPrintf("[%v] %v : sendRequestVote receive %v reply, time - %v, args - %+v reply - %+v\n", logid, rf.me, server, time.Since(programestarttime), args, reply)
 	if reply.Term > rf.currentterm {
 		rf.mu.Lock()
 		rf.currentterm = reply.Term
@@ -293,41 +306,54 @@ type AppendEntriesArgs struct {
 
 	Entries           []Log // 待复制的日志
 	LeaderCommitIndex int   // leader的commit index
+	LogId     int // debug
 }
 
 type AppendEntriesReply struct {
 	Term    int  // 假设follower的term比leader还高，要回复这个term。leader会根据这个值重置自己的term?
 	Success bool // 如果follower包含索引为prevLogIndex，且任期为prevLogTerm。
+	LogId     int // debug
 }
 
-// 复制日志的处理函数
+// 处理心跳和复制日志
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
-	// 处理心跳和复制日志
 	// 仅仅是lab2A
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+	logid := args.LogId
+	DPrintf("[%v] %v: {term - %v role - %v} receive TBD heart beat from %v, args - %+v\n", logid, rf.me, rf.currentterm, rf.role, args.LeaderId, args)
 	if args.Term < rf.currentterm {
+		DPrintf("[%v] %v: {term - %v role - %v} : receive invalid heart beat from %v, args - %+v\n", logid, rf.me, rf.currentterm, rf.role, args.LeaderId, args)
 		reply.Success = false
 	} else if args.Term > rf.currentterm {
+		DPrintf("[%v] %v: {term - %v role - %v} : receive valid heart beat from %v, args - %+v\n", logid, rf.me, rf.currentterm,rf.role, args.LeaderId, args)
 		reply.Success = true
 		rf.currentterm = args.Term
 		rf.role = FOLLOWER
 		rf.votedfor = args.LeaderId
+		rf.leaderid = args.LeaderId
 	} else {
-		// 如果本身是candidate，是不是应该也要转换role?
+		// 这种情况什么时候发生？如果本身是candidate，是不是应该也要转换role?
+		DPrintf("[%v] %v: {term - %v role - %v} : receive valid heart beat from %v, args - %+v\n", logid, rf.me, rf.currentterm, rf.role, args.LeaderId, args)
+		rf.role = FOLLOWER
 		reply.Success = true
+		// 下面这行漏掉了，如果
+		rf.leaderid = args.LeaderId
 	}
 	if reply.Success {
 		// 收到心跳包，更新lastHeart
+		DPrintf("[%v] %v: {term - %v role - %v} update last heart beat because receive from %v, " +
+			"last heart beat - %v, %v from last heart beat\n", logid, rf.me, rf.currentterm, rf.role, args.LeaderId, rf.lastheartbeat, time.Since(rf.lastheartbeat))
 		rf.lastheartbeat = time.Now()
 	}
 	reply.Term = rf.currentterm
 }
 
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
-	DPrintf("sendAppendEntries %v -> %v request, time - %v, args - %+v \n", args.LeaderId, server, time.Since(programestarttime), args)
+	logid := args.LogId
+	DPrintf("[%v] %v: sendAppendEntries to %v request, time - %v, args - %+v\n", logid, rf.me, server, time.Since(programestarttime), args)
 	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
-	DPrintf("sendRequestVote %v -> %v reply, time - %v, args - %+v reply - %+v\n", args.LeaderId, server, time.Since(programestarttime), args, reply)
+	DPrintf("[%v] %v: sendAppendEntries receive %v reply, time - %v, args - %+v, reply - %+v\n", logid, rf.me, server, time.Since(programestarttime), args, reply)
 	if reply.Term > rf.currentterm {
 		rf.mu.Lock()
 		rf.currentterm = reply.Term
@@ -368,6 +394,9 @@ func (rf *Raft) DoHeartBeat() {
 					args.LeaderCommitIndex = rf.commitindex
 					rf.mu.Unlock()
 					reply := &AppendEntriesReply{}
+					logid := rand.Int()
+					args.LogId = logid
+					reply.LogId = logid
 					// 发起心跳
 					rf.sendAppendEntries(nodeindex, args, reply)
 					// 应该不用取处理失败的情况，某一个失败，会继续向其他的node发送。
@@ -375,7 +404,14 @@ func (rf *Raft) DoHeartBeat() {
 				}(i)
 			}
 		}
-		time.Sleep(rf.heartbeattimeout)
+		/*
+			time.Sleep(rf.heartbeattimeout)
+			感觉这个发心跳还不能这么写，由于在main loop里面的sleep时间调整，会导致leader发心跳的时间总是接近于follower检查心跳的时间
+			这样很容易leader发心跳的时间晚于其他follower检查心跳的时间一点点导致其他follower重新发起选举，导致很容易触发多次选举。
+			感觉原则上这个sleep应该比检查心跳时间的时间短一些。
+			所以我觉得应该还有一个heartbeatinteval的变量控制才对。
+		*/
+		time.Sleep(rf.heartbeatinteval)
 	}
 }
 
@@ -395,7 +431,7 @@ func (rf *Raft) DoVote() {
 		var voteagree int64 = 1 // 自己先投自己一票
 		rf.votedfor = rf.me
 		rf.currentterm += 1
-		DPrintf("%v change current term from %v to %v \n", rf.me, rf.currentterm-1, rf.currentterm)
+		DPrintf("%v : change term from %v to %v, start to vote\n", rf.me, rf.currentterm - 1, rf.currentterm)
 		//term := rf.currentterm + 1 这个写法是错误的，自己的currentterm要+1
 		term := rf.currentterm
 		candidateindex := rf.me
@@ -411,7 +447,10 @@ func (rf *Raft) DoVote() {
 					args.CandidateIndex = candidateindex
 					args.LastLogIndex = lastlogindex
 					args.LastLogItemTerm = lastlogterm
+					logid := rand.Int()
+					args.LogId = logid
 					reply := &RequestVoteReply{}
+					reply.LogId = logid
 					ok := rf.sendRequestVote(nodeindex, args, reply)
 					rf.mu.Lock()
 					/*
@@ -421,13 +460,15 @@ func (rf *Raft) DoVote() {
 					 yes回复的不再执行变为leader后做的事情。
 					 3.如果reply.VoteGranted为false，此raft是否要更新自己的currentterm到reply.term ?
 					*/
-					DPrintf("{ok - %v votegranted - %v role - %v arg.term - %v rf.term - %v }\n", ok, reply.VoteGranted, rf.role, args.Term, rf.currentterm)
+					//DPrintf("{ok - %v votegranted - %v role - %v arg.term - %v rf.term - %v }\n", ok, reply.VoteGranted, rf.role, args.Term, rf.currentterm)
 					if ok && reply.VoteGranted && rf.role == CANDIDATE && args.Term == rf.currentterm {
 						// 如果获取了一个选票
-						DPrintf("%v get one vote from %v", rf.me, nodeindex)
+						DPrintf("[%v] %v : get one vote from %v", logid, rf.me, nodeindex)
 						atomic.AddInt64(&voteagree, 1)
 						// 如果获取了足够的投票转为leader，不足够仅仅voteagree++
 						if int(voteagree)*2 > len(rf.peers) {
+							DPrintf("[%v] %v : become leader", logid, rf.me)
+							rf.leaderid = rf.me
 							rf.role = LEADER
 							// 重置leader的nextindex和matchindex
 							// 按照规则，重置为当前candidate的最大logindex + 1
@@ -533,12 +574,13 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.role = FOLLOWER
 	rf.lastheartbeat = time.Now()
 	// 随机化选举时间，心跳时间我觉得不需要随机化吧？这两个时间之间的关系有什么要求?
-	//rf.heartbeattimeout = time.Duration(rand.Intn(50) + 50) * time.Millisecond
 	rf.heartbeattimeout = time.Duration(120) * time.Millisecond
+	// heartbeatinteval必须要小于rf.heartbeattimeout
+	rf.heartbeatinteval = time.Duration(100) * time.Millisecond
 	randtime := rand.Intn(50)
 	rf.electiontimeout = time.Duration(randtime+150) * time.Millisecond
-	rf.heartbeatticker = time.NewTicker(rf.heartbeattimeout)
-	rf.electionticker = time.NewTicker(rf.electiontimeout)
+	//rf.heartbeatticker = time.NewTicker(rf.heartbeattimeout)
+	//rf.electionticker = time.NewTicker(rf.electiontimeout)
 
 	rf.leaderid = -1
 	/* 这里的核心是每个raft作为不同的角色，执行的操作不一样，导致这个goroutine很难统一的写，实际上在main loop里
@@ -547,7 +589,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	   2.作为follower，持续监听心跳，如果长时间没有接收到，转为candidate。
 	   3.作为leader，持续定时发送心跳，维持自己的地位。
 	*/
-	DPrintf("%v: %+v }\n", rf.me, rf)
+	logid := rand.Int()
+	DPrintf("[%v] %v: %+v }\n", logid, rf.me, rf)
 	go func() {
 		for {
 			/*
@@ -557,9 +600,9 @@ func Make(peers []*labrpc.ClientEnd, me int,
 				例如初始3个raft node一起启动，在睡眠了一段时间后没有收到心跳，触发选举。重新回到这个地方时，如果没有后面重置，由于lastheart还没修改过
 				rf.heartbeattimeout - time.Since(rf.lastheartbeat)会是负值或者接近于0，导致此node马上又发起第二轮选举。
 			*/
-			DPrintf("%v sleep %v, at time %v\n", rf.me, rf.heartbeattimeout-time.Since(rf.lastheartbeat), time.Since(programestarttime))
+			DPrintf("[%v] %v : sleep %v, at time %v, last heart beat %v\n", logid, rf.me, rf.heartbeattimeout-time.Since(rf.lastheartbeat), time.Since(programestarttime), time.Since(rf.lastheartbeat))
 			time.Sleep(rf.heartbeattimeout - time.Since(rf.lastheartbeat))
-			DPrintf("%v wakeup at time %v\n", rf.me, time.Since(programestarttime))
+			DPrintf("[%v] %v : wake up at time %v\n", logid, rf.me, time.Since(programestarttime))
 			// 这里要考虑sleep以后的rf.lastheartbeat被更新了。如果在整个heartbeattimeout期间发现新的心跳，说明要转为
 			// candiate，并发起投票。
 			// 如果不是FOLLOWER，就不管，继续睡眠

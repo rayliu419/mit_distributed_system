@@ -8,8 +8,10 @@ package raft
 // test with the original before submitting.
 //
 
-import "testing"
-import "fmt"
+import (
+	"fmt"
+	"testing"
+)
 import "time"
 import "math/rand"
 import "sync/atomic"
@@ -19,6 +21,9 @@ import "sync"
 // (much more than the paper's range of timeouts).
 const RaftElectionTimeout = 1000 * time.Millisecond
 
+/*
+	最基本的场景。判断是否有leader被选举出来。
+ */
 func TestInitialElection2A(t *testing.T) {
 	servers := 3
 	cfg := make_config(t, servers, false)
@@ -47,6 +52,11 @@ func TestInitialElection2A(t *testing.T) {
 	cfg.end()
 }
 
+/*
+	这个场景是初始3个raft node正常工作。某个node变成了leader，然后发生了网络隔离，它的包发不出去，它的回复别的node也收不到。
+	过了一段时间，这个node回到了集群，它应该迅速的知道自己不再是leader了。
+	每个term要保证只有一个leader。
+ */
 func TestReElection2A(t *testing.T) {
 	servers := 3
 	cfg := make_config(t, servers, false)
