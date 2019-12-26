@@ -204,11 +204,13 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	defer rf.mu.Unlock()
 	//DPrintf("%v : {term - %v votefor - %v}: handle vote from {index - %v term - %v }", rf.me, rf.currentterm, rf.votedfor, args.CandidateIndex, args.Term)
 	if args.Term < rf.currentterm {
-		DPrintf("[%v]- %v %v {term - %v role - %v}： refuse vote {index - %v term - %v }\n", logid, rf.me, rf.currentterm, rf.role, args.CandidateIndex, args.Term)
+		DPrintf("[%v]- %v %v {term - %v role - %v}： refuse vote {index - %v term - %v }\n",
+			logid, rf.me, rf.currentterm, rf.role, args.CandidateIndex, args.Term)
 		reply.VoteGranted = false
 	} else {
 		if args.Term > rf.currentterm {
-			DPrintf("[%v]%v : {term - %v role - %v}: - change term because recevie vote {index - %v term - %v }\n", logid, rf.me, rf.currentterm, rf.role, args.CandidateIndex, args.Term)
+			DPrintf("[%v]%v : {term - %v role - %v}: - change term because recevie vote {index - %v term - %v }\n",
+				logid, rf.me, rf.currentterm, rf.role, args.CandidateIndex, args.Term)
 			rf.role = FOLLOWER
 			rf.currentterm = args.Term
 			rf.votedfor = -1
@@ -237,9 +239,11 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		}
 	}
 	if reply.VoteGranted {
-		DPrintf("[%v] %v {term - %v role - %v}: accept vote from {index - %v term - %v }", logid, rf.me, rf.currentterm, rf.role, args.CandidateIndex, args.Term)
+		DPrintf("[%v] %v {term - %v role - %v}: accept vote from {index - %v term - %v }",
+			logid, rf.me, rf.currentterm, rf.role, args.CandidateIndex, args.Term)
 	} else {
-		DPrintf("[%v] %v {term - %v role - %v}: refuse vote from {index - %v term - %v }", logid, rf.me, rf.currentterm, rf.role, args.CandidateIndex, args.Term)
+		DPrintf("[%v] %v {term - %v role - %v}: refuse vote from {index - %v term - %v }",
+			logid, rf.me, rf.currentterm, rf.role, args.CandidateIndex, args.Term)
 	}
 	reply.Term = rf.currentterm
 }
@@ -285,9 +289,11 @@ appendEntries()的回应回来
 */
 func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
 	logid := args.LogId
-	DPrintf("[%v] %v: sendRequestVote to %v request, time - %v, args - %+v\n", logid, args.CandidateIndex, server, time.Since(programestarttime), args)
+	DPrintf("[%v] %v: sendRequestVote to %v request, time - %v, args - %+v\n",
+		logid, args.CandidateIndex, server, time.Since(programestarttime), args)
 	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
-	DPrintf("[%v] %v : sendRequestVote receive %v reply, time - %v, args - %+v reply - %+v\n", logid, rf.me, server, time.Since(programestarttime), args, reply)
+	DPrintf("[%v] %v : sendRequestVote receive %v reply, time - %v, args - %+v reply - %+v\n",
+		logid, rf.me, server, time.Since(programestarttime), args, reply)
 	if reply.Term > rf.currentterm {
 		rf.mu.Lock()
 		rf.currentterm = reply.Term
@@ -321,20 +327,31 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	logid := args.LogId
-	DPrintf("[%v] %v: {term - %v role - %v} receive TBD heart beat from %v, args - %+v\n", logid, rf.me, rf.currentterm, rf.role, args.LeaderId, args)
+	DPrintf("[%v] %v: {term - %v role - %v} receive TBD heart beat from %v, args - %+v\n",
+		logid, rf.me, rf.currentterm, rf.role, args.LeaderId, args)
 	if args.Term < rf.currentterm {
-		DPrintf("[%v] %v: {term - %v role - %v} : receive invalid heart beat from %v, args - %+v\n", logid, rf.me, rf.currentterm, rf.role, args.LeaderId, args)
+		DPrintf("[%v] %v: {term - %v role - %v} : receive invalid heart beat from %v, args - %+v\n",
+			logid, rf.me, rf.currentterm, rf.role, args.LeaderId, args)
 		reply.Success = false
 	} else if args.Term > rf.currentterm {
-		DPrintf("[%v] %v: {term - %v role - %v} : receive valid heart beat from %v, args - %+v\n", logid, rf.me, rf.currentterm,rf.role, args.LeaderId, args)
+		// node从网络隔离中新上线。
+		DPrintf("[%v] %v: {term - %v role - %v} : receive valid heart beat from %v, args - %+v\n",
+			logid, rf.me, rf.currentterm,rf.role, args.LeaderId, args)
 		reply.Success = true
 		rf.currentterm = args.Term
 		rf.role = FOLLOWER
 		rf.votedfor = args.LeaderId
 		rf.leaderid = args.LeaderId
 	} else {
-		// 这种情况什么时候发生？如果本身是candidate，是不是应该也要转换role?
-		DPrintf("[%v] %v: {term - %v role - %v} : receive valid heart beat from %v, args - %+v\n", logid, rf.me, rf.currentterm, rf.role, args.LeaderId, args)
+		/*
+			场景
+			1.node1和node2同时发起RequestVote，node1变为leader，node2还在等待vote的回复，接着node1开始发心跳，node2接到
+			此心跳，需要更新node2的leaderid。
+			2.node1当选为leader后的常规心跳，不用更新node2的leaderid。
+		 */
+		//如果本身是candidate，是不是应该也要转换role?
+		DPrintf("[%v] %v: {term - %v role - %v} : receive valid heart beat from %v, args - %+v\n",
+			logid, rf.me, rf.currentterm, rf.role, args.LeaderId, args)
 		rf.role = FOLLOWER
 		reply.Success = true
 		// 下面这行漏掉了，如果
@@ -351,9 +368,11 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
 	logid := args.LogId
-	DPrintf("[%v] %v: sendAppendEntries to %v request, time - %v, args - %+v\n", logid, rf.me, server, time.Since(programestarttime), args)
+	DPrintf("[%v] %v: sendAppendEntries to %v request, time - %v, args - %+v\n",
+		logid, rf.me, server, time.Since(programestarttime), args)
 	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
-	DPrintf("[%v] %v: sendAppendEntries receive %v reply, time - %v, args - %+v, reply - %+v\n", logid, rf.me, server, time.Since(programestarttime), args, reply)
+	DPrintf("[%v] %v: sendAppendEntries receive %v reply, time - %v, args - %+v, reply - %+v\n",
+		logid, rf.me, server, time.Since(programestarttime), args, reply)
 	if reply.Term > rf.currentterm {
 		rf.mu.Lock()
 		rf.currentterm = reply.Term
@@ -600,7 +619,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 				例如初始3个raft node一起启动，在睡眠了一段时间后没有收到心跳，触发选举。重新回到这个地方时，如果没有后面重置，由于lastheart还没修改过
 				rf.heartbeattimeout - time.Since(rf.lastheartbeat)会是负值或者接近于0，导致此node马上又发起第二轮选举。
 			*/
-			DPrintf("[%v] %v : sleep %v, at time %v, last heart beat %v\n", logid, rf.me, rf.heartbeattimeout-time.Since(rf.lastheartbeat), time.Since(programestarttime), time.Since(rf.lastheartbeat))
+			DPrintf("[%v] %v : sleep %v, at time %v, last heart beat %v\n",
+				logid, rf.me, rf.heartbeattimeout-time.Since(rf.lastheartbeat), time.Since(programestarttime), time.Since(rf.lastheartbeat))
 			time.Sleep(rf.heartbeattimeout - time.Since(rf.lastheartbeat))
 			DPrintf("[%v] %v : wake up at time %v\n", logid, rf.me, time.Since(programestarttime))
 			// 这里要考虑sleep以后的rf.lastheartbeat被更新了。如果在整个heartbeattimeout期间发现新的心跳，说明要转为
