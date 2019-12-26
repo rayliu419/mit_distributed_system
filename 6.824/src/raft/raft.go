@@ -97,7 +97,7 @@ type Raft struct {
 	heartbeatinteval time.Duration // 用于leader周期性发心跳，在论文中，并没有指明需不需要这个值。只是说在空闲时间发心跳，如果设置为hearttimeout，会有问题。
 	//heartbeatticker  *time.Ticker  //用于leader周期性激活
 	//electionticker   *time.Ticker  // 用于选举的周期性激活
-	leaderid         int           // 当前的leader
+	leaderid int // 当前的leader
 }
 
 // return currentTerm and whether this server
@@ -162,7 +162,7 @@ type RequestVoteArgs struct {
 	CandidateIndex  int // candidate的index
 	LastLogIndex    int // candidate的最后一条日志的索引
 	LastLogItemTerm int // candidate的最后一条日志的term
-	LogId     int // debug
+	LogId           int // debug
 }
 
 //
@@ -173,7 +173,7 @@ type RequestVoteReply struct {
 	// Your data here (2A).
 	Term        int  // 这里应该是其他peer当前的term，用于返回给发起投票的candidate更新。
 	VoteGranted bool // 是否收到了同意的投票
-	LogId     int // debug
+	LogId       int  // debug
 }
 
 // ugly，怎么使用golang写的更好
@@ -215,14 +215,14 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 			rf.currentterm = args.Term
 			rf.votedfor = -1
 		}
-		//candidatelogindex := args.LastLogIndex
-		//candidatelogterm := args.LastLogItemTerm
-		//mylogindex := len(rf.log) - 1
-		//mylogterm := rf.log[mylogindex].Term
-		//// 计算谁的日志更新
-		//candidatenewer := LogNewer(candidatelogindex, candidatelogterm, mylogindex, mylogterm)
+		candidatelogindex := args.LastLogIndex
+		candidatelogterm := args.LastLogItemTerm
+		mylogindex := len(rf.log) - 1
+		mylogterm := rf.log[mylogindex].Term
+		// 计算谁的日志更新
+		candidatenewer := LogNewer(candidatelogindex, candidatelogterm, mylogindex, mylogterm)
 		voteconditon := false
-		candidatenewer := true
+		//candidatenewer := true
 		if rf.votedfor == -1 || rf.votedfor == args.CandidateIndex {
 			// 没有为最新的term投过票或者投过相同的票了？第二个条件是因为可能出现发送两次请求吗？- 包重复
 			//DPrintf("%v - %v votecondition is true because votefor is %v\n", args.CandidateIndex, rf.me, rf.votedfor)
@@ -307,18 +307,18 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 type AppendEntriesArgs struct {
 	Term         int // leader的term
 	LeaderId     int // leader的index, follower可以设置，设置在哪个字段？
-	PrevLogIndex int //
+	PrevLogIndex int // 这个index代表的含义是：假设leader要给node(i)复制新日志，新日志集合的前一个的index
 	PrevLogTerm  int // 上面对应的term
 
 	Entries           []Log // 待复制的日志
 	LeaderCommitIndex int   // leader的commit index
-	LogId     int // debug
+	LogId             int   // debug
 }
 
 type AppendEntriesReply struct {
 	Term    int  // 假设follower的term比leader还高，要回复这个term。leader会根据这个值重置自己的term?
 	Success bool // 如果follower包含索引为prevLogIndex，且任期为prevLogTerm。
-	LogId     int // debug
+	LogId   int  // debug
 }
 
 // 处理心跳和复制日志
@@ -336,7 +336,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	} else if args.Term > rf.currentterm {
 		// node从网络隔离中新上线。
 		DPrintf("[%v] %v: {term - %v role - %v} : receive valid heart beat from %v, args - %+v\n",
-			logid, rf.me, rf.currentterm,rf.role, args.LeaderId, args)
+			logid, rf.me, rf.currentterm, rf.role, args.LeaderId, args)
 		reply.Success = true
 		rf.currentterm = args.Term
 		rf.role = FOLLOWER
@@ -344,22 +344,24 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		rf.leaderid = args.LeaderId
 	} else {
 		/*
-			场景
+			心跳场景
 			1.node1和node2同时发起RequestVote，node1变为leader，node2还在等待vote的回复，接着node1开始发心跳，node2接到
 			此心跳，需要更新node2的leaderid。
 			2.node1当选为leader后的常规心跳，不用更新node2的leaderid。
-		 */
+			TODO: 要加入处理复制日志的场景
+			复制日志的场景需要检测日志，并且将reply.Sucess=false以让
+		*/
 		//如果本身是candidate，是不是应该也要转换role?
 		DPrintf("[%v] %v: {term - %v role - %v} : receive valid heart beat from %v, args - %+v\n",
 			logid, rf.me, rf.currentterm, rf.role, args.LeaderId, args)
+		// 这里既是reply.Sucess = false[相应复制日志请求]，也需要重置leaderId和role
 		rf.role = FOLLOWER
-		reply.Success = true
-		// 下面这行漏掉了，如果
 		rf.leaderid = args.LeaderId
+		reply.Success = true
 	}
 	if reply.Success {
 		// 收到心跳包，更新lastHeart
-		DPrintf("[%v] %v: {term - %v role - %v} update last heart beat because receive from %v, " +
+		DPrintf("[%v] %v: {term - %v role - %v} update last heart beat because receive from %v, "+
 			"last heart beat - %v, %v from last heart beat\n", logid, rf.me, rf.currentterm, rf.role, args.LeaderId, rf.lastheartbeat, time.Since(rf.lastheartbeat))
 		rf.lastheartbeat = time.Now()
 	}
@@ -408,7 +410,7 @@ func (rf *Raft) DoHeartBeat() {
 					args.Term = rf.currentterm
 					args.LeaderId = rf.me
 					args.PrevLogIndex = len(rf.log) - 1
-					args.PrevLogTerm = 0          // 在lab2中应该只是占位符而已
+					args.PrevLogTerm = rf.log[len(rf.log)-1].Term
 					args.Entries = make([]Log, 0) // 空log
 					args.LeaderCommitIndex = rf.commitindex
 					rf.mu.Unlock()
@@ -434,7 +436,6 @@ func (rf *Raft) DoHeartBeat() {
 	}
 }
 
-// 发起投票
 func (rf *Raft) DoVote() {
 	for {
 		/* 每过electontimeout的时间检测一下自己是否变为了leader，或者其他人变成了leader。
@@ -450,7 +451,7 @@ func (rf *Raft) DoVote() {
 		var voteagree int64 = 1 // 自己先投自己一票
 		rf.votedfor = rf.me
 		rf.currentterm += 1
-		DPrintf("%v : change term from %v to %v, start to vote\n", rf.me, rf.currentterm - 1, rf.currentterm)
+		DPrintf("%v : change term from %v to %v, start to vote\n", rf.me, rf.currentterm-1, rf.currentterm)
 		//term := rf.currentterm + 1 这个写法是错误的，自己的currentterm要+1
 		term := rf.currentterm
 		candidateindex := rf.me
@@ -474,7 +475,7 @@ func (rf *Raft) DoVote() {
 					rf.mu.Lock()
 					/*
 					 1.args.Term == rf.currentterm 应该是代表在candidate在投票期间，接收到了其他leader的appendEntries()
-					 发现自己term比较小，更新了自己的currentterm。
+					 发现自己term比较小，更新了自己的currentterm。或者是收到了一个以前的vote的回复，但是上一轮选举已经超时了。
 					 2.rf.role == CANDIDATE 的检查在于，如果已经收到了足够的选票，在语句中修改了rf.role = LEADER，后续收到
 					 yes回复的不再执行变为leader后做的事情。
 					 3.如果reply.VoteGranted为false，此raft是否要更新自己的currentterm到reply.term ?
@@ -500,7 +501,6 @@ func (rf *Raft) DoVote() {
 							for k := 0; k < len(rf.peers); k++ {
 								rf.matchindex[k] = 0
 							}
-							// 发送心跳，维持leader地位。怎么实现？
 							go rf.DoHeartBeat()
 						}
 					}
@@ -509,6 +509,85 @@ func (rf *Raft) DoVote() {
 			}
 		}
 		time.Sleep(rf.electiontimeout)
+	}
+}
+
+func (rf *Raft) DoAppendEntries() {
+	/*
+		这个是DoHeartbeat的升级版。实际上，在raft中，要把心跳和replication log结合起来。
+		实现完以后要替代DoHeartbeat()通过lab2a。
+		1.没有要replicate的log的时候，发心跳包 。
+		2.有要replicate的log的时候，发复制日志包。
+		所以也是无限循环
+		这个实现不好的地方在于，如果日志复制失败了需要等待较长的时间。- heartbeatinterval
+	*/
+	for {
+		if rf.role != LEADER {
+			break
+		}
+		for i := 0; i < len(rf.peers); i++ {
+			// 向各个node发出RequestVote
+			if i != rf.me {
+				go func(nodeindex int) {
+					args := &AppendEntriesArgs{}
+					reply := &AppendEntriesReply{}
+					rf.mu.Lock()
+					logid := rand.Int()
+					args.LogId = logid
+					args.Term = rf.currentterm
+					args.LeaderId = rf.me
+					args.LeaderCommitIndex = rf.commitindex
+					/*
+						计算要发哪些日志给不同的node
+					*/
+					entries := make([]Log, 0)
+					/*
+						初始时，rf.nextindex[all] = 1, rf.log = [{0, "empty"}], rf.log[1:] = []
+						假设一个元素，rf.nextindex[all] = 1, rf.log = [{0, "empty"}, {1, "10"}], rf.log[1:] = [{1, "10"}]
+						这个地方不知道会不会有问题，debug时再看看。
+					*/
+					startindex := rf.nextindex[nodeindex]
+					endindex := len(rf.log)
+					entries = append(entries, rf.log[startindex:]...)
+					args.PrevLogIndex = startindex - 1
+					args.PrevLogTerm = rf.log[startindex-1].Term
+					args.Entries = entries
+					reply.LogId = logid
+					rf.mu.Unlock()
+					// 有日志发日志，没日志发心跳
+					ok := rf.sendAppendEntries(nodeindex, args, reply)
+					/*
+						按照图2的说法，两种情况会返回reply.Success = false。
+						1.follower的term比当前的还新。在sendAppendEntries会把当前这个leader变成follower，不会再转入下面的判断
+						2.follower的日志没有完全，需要reply.Success = false以让leader发多余的日志给follower
+					*/
+					rf.mu.Lock()
+					if ok && rf.role == LEADER && args.Term == rf.currentterm {
+						if !reply.Success {
+							/*
+								在没有改变AppendEntriesReply的参数的情况下，需要一步步回退
+								在下一次的循环中，多发一条日志给这个follower
+							*/
+							rf.nextindex[nodeindex] = rf.nextindex[nodeindex] - 1
+						} else {
+							/*
+								成功的复制了很多日志，这样的话要更新nextindex[nodeindex]。这里要使用上面的endindex，因为
+								len(rf.log)可能已经变了。- 好像也没问题，如果这样，PrevLogIndex会让leader知道nextindex要回退
+							*/
+							rf.nextindex[nodeindex] = endindex
+							rf.matchindex[nodeindex] = endindex
+							for iter := rf.commitindex; iter < len(rf.log); iter++ {
+								/*
+									更新commitindex，一个个来更新。
+								*/
+							}
+						}
+					}
+					rf.mu.Unlock()
+				}(i)
+			}
+		}
+		time.Sleep(rf.heartbeatinteval)
 	}
 }
 
@@ -532,9 +611,18 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	index := -1
 	term := -1
 	isLeader := true
-
 	// Your code here (2B).
-
+	if rf.role != LEADER {
+		// 不是leader，直接返回
+		isLeader = false
+	} else {
+		rf.mu.Lock()
+		index = len(rf.log)
+		term = rf.currentterm
+		rf.log = append(rf.log, Log{rf.currentterm, command})
+		go rf.DoAppendEntries()
+		rf.mu.Unlock()
+	}
 	return index, term, isLeader
 }
 
@@ -584,8 +672,10 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	// 但是为了先运行lab2a,需要先手动的处理。
 	rf.currentterm = 0
 	rf.votedfor = -1
+	// 初始情况下，Log应该怎么初始化？因为
 	rf.log = make([]Log, 0)
-	rf.log = append(rf.log, Log{1, "x->3"})
+	rf.log = append(rf.log, Log{0, "placeholder"})
+	//rf.log = append(rf.log, Log{0, "placeholder"})
 
 	rf.commitindex = 0
 	rf.lastapplied = 0
@@ -643,4 +733,18 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.readPersist(persister.ReadRaftState())
 
 	return rf
+}
+
+func testAppend() {
+	var logs []Log
+	logswithph := append(logs, Log{0, "empty"})
+	logswithonelog := append(logswithph, Log{1, "1"})
+	fmt.Println(logswithph)
+	fmt.Println(logswithonelog)
+	testlogs1 := make([]Log, 0)
+	testlogs2 := make([]Log, 0)
+	testlogs1 = append(testlogs1, logswithph[1:]...)
+	testlogs2 = append(testlogs2, logswithonelog[1:]...)
+	fmt.Println(testlogs1)
+	fmt.Println(testlogs2)
 }
