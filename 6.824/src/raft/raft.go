@@ -83,11 +83,14 @@ type Raft struct {
 	lastapplied int // 已经被提交到状态机的最后一个日志的索引(初值为0且单调递增)
 
 	// leader可变状态
-	// 对于某个server来说，leader需要发送给那个server的index，初始化为leader的last log index + 1。数组长度跟peers长度一样。
-	// 不断的试探回退。
+	/*
+		对于某个server来说，leader需要发送给那个server的index，初始化为leader的last log index + 1。数组长度跟peers长度一样。
+		不断的试探回退。
+	 */
 	nextindex []int
-	// 每个server log里最高的匹配leader log的index，初始都为0。
-	matchindex []int // 跟peers长度一样
+	// 每个server log里最高的匹配leader log的index，初始都为0。用来更新commitindex
+	matchindex []int
+	// 上面这两个数组对于自己那一个元素怎么维护？
 
 	// 其他未在图二中有的，但是我觉得需要
 	role             int
@@ -321,20 +324,23 @@ type AppendEntriesReply struct {
 	LogId   int  // debug
 }
 
-// 处理心跳和复制日志
+// 处理心跳和复制日志的请求
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	// 仅仅是lab2A
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	logid := args.LogId
-	DPrintf("[%v] %v: {term - %v role - %v} receive TBD heart beat from %v, args - %+v\n",
+	DPrintf("[%v] %v: {term - %v role - %v} receive AppendEntries from %v, args - %+v\n",
 		logid, rf.me, rf.currentterm, rf.role, args.LeaderId, args)
 	if args.Term < rf.currentterm {
 		DPrintf("[%v] %v: {term - %v role - %v} : receive invalid heart beat from %v, args - %+v\n",
 			logid, rf.me, rf.currentterm, rf.role, args.LeaderId, args)
 		reply.Success = false
-	} else if args.Term > rf.currentterm {
-		// node从网络隔离中新上线。
+	} else {
+		/*
+			合并两类case args.Term == rf.currentterm 和args.Term > rf.currentterm
+			node从网络隔离中新上线。
+		 */
 		DPrintf("[%v] %v: {term - %v role - %v} : receive valid heart beat from %v, args - %+v\n",
 			logid, rf.me, rf.currentterm, rf.role, args.LeaderId, args)
 		reply.Success = true
@@ -342,28 +348,35 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		rf.role = FOLLOWER
 		rf.votedfor = args.LeaderId
 		rf.leaderid = args.LeaderId
-	} else {
+		DPrintf("[%v] %v: {term - %v role - %v} update last heart beat because receive from %v, "+
+			"%+v\n", logid, rf.me, rf.currentterm, rf.role, args.LeaderId, args)
+		// 都是合法的，所以要更新心跳时间
+		rf.lastheartbeat = time.Now()
 		/*
 			心跳场景
 			1.node1和node2同时发起RequestVote，node1变为leader，node2还在等待vote的回复，接着node1开始发心跳，node2接到
 			此心跳，需要更新node2的leaderid。
 			2.node1当选为leader后的常规心跳，不用更新node2的leaderid。
-			TODO: 要加入处理复制日志的场景
-			复制日志的场景需要检测日志，并且将reply.Sucess=false以让
+			复制日志的场景需要检测日志，并且将reply.Success = false以让leader发更多的同步日志
 		*/
-		//如果本身是candidate，是不是应该也要转换role?
-		DPrintf("[%v] %v: {term - %v role - %v} : receive valid heart beat from %v, args - %+v\n",
-			logid, rf.me, rf.currentterm, rf.role, args.LeaderId, args)
-		// 这里既是reply.Sucess = false[相应复制日志请求]，也需要重置leaderId和role
-		rf.role = FOLLOWER
-		rf.leaderid = args.LeaderId
-		reply.Success = true
-	}
-	if reply.Success {
-		// 收到心跳包，更新lastHeart
-		DPrintf("[%v] %v: {term - %v role - %v} update last heart beat because receive from %v, "+
-			"last heart beat - %v, %v from last heart beat\n", logid, rf.me, rf.currentterm, rf.role, args.LeaderId, rf.lastheartbeat, time.Since(rf.lastheartbeat))
-		rf.lastheartbeat = time.Now()
+		if len(rf.log) < args.PrevLogIndex {
+			// 本node没有那么长的log，要leader传更多的日志过来
+			reply.Success = false
+		} else {
+			// 有>=args.PrevLogIndex的日志。检查
+			if rf.log[args.PrevLogIndex].Term != args.PrevLogTerm {
+				// 清除本node从PrevLogIndex到末尾的的日志
+				rf.log = rf.log[0:args.PrevLogIndex]
+			}
+			// 添加leader发来的其他的日志
+			rf.log = append(rf.log, args.Entries...)
+			for iter := rf.commitindex; iter < args.LeaderCommitIndex; iter++ {
+				// 更新本地的commitindex到leader的commitindex
+			}
+			DPrintf("[%v] %v: {term - %v role - %v} update commit index from %v to %v\n",
+				logid, rf.me, rf.currentterm, rf.role, rf.commitindex, args.LeaderCommitIndex)
+			rf.commitindex = args.LeaderCommitIndex
+		}
 	}
 	reply.Term = rf.currentterm
 }
@@ -385,6 +398,10 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 	return ok
 }
 
+/*
+	仅仅在lab2a中使用，因为此函数处理不了复制日志的情况。
+	需要被DoAppendEntries()在lab2b中被替换
+ */
 func (rf *Raft) DoHeartBeat() {
 	// 在参考资料中，加入了一个进入的线程数检测，但是我觉得不需要，因为应该只会有一个线程能成功调用DoHeartBeat()
 	for {
@@ -515,11 +532,12 @@ func (rf *Raft) DoVote() {
 func (rf *Raft) DoAppendEntries() {
 	/*
 		这个是DoHeartbeat的升级版。实际上，在raft中，要把心跳和replication log结合起来。
+		考虑到这样的场景，leader一边在跟follower心跳维持地位，一边接受client的新请求。这样会出现一会发空日志，一会发append日志。
 		实现完以后要替代DoHeartbeat()通过lab2a。
 		1.没有要replicate的log的时候，发心跳包 。
 		2.有要replicate的log的时候，发复制日志包。
 		所以也是无限循环
-		这个实现不好的地方在于，如果日志复制失败了需要等待较长的时间。- heartbeatinterval
+		这个实现不好的地方在于，如果日志复制失败了需要等待较长的时间，一下复制一批。- heartbeatinterval
 	*/
 	for {
 		if rf.role != LEADER {
@@ -579,7 +597,25 @@ func (rf *Raft) DoAppendEntries() {
 							for iter := rf.commitindex; iter < len(rf.log); iter++ {
 								/*
 									更新commitindex，一个个来更新。
+									由于matchindex增加了，commitindex可能可以增加了
 								*/
+								count := 1 // 超过iter的个数，超过半数即可增加commitindex
+								for j:= 0; j < len(rf.peers); j++ {
+									if j != rf.me {
+										if rf.matchindex[j] > iter {
+											count += 1
+										}
+									}
+								}
+								// 按照图2的说法，还有一个条件是log[iter].Term == rf.currentterm，这个是什么意思?
+								if count * 2 > len(rf.peers) {
+									DPrintf("[%v] %v : increase commit index from %v to %v",
+										logid, rf.me, rf.commitindex, rf.commitindex + 1)
+									rf.commitindex += 1
+								} else {
+									// 当前这个iter的值都过不了，不再判断下一个iter
+									break
+								}
 							}
 						}
 					}
@@ -605,8 +641,12 @@ func (rf *Raft) DoAppendEntries() {
 // term. the third return value is true if this server believes it is
 // the leader.
 //
-// Start()需要迅速返回，不要等待日志添加完成。
-// 要求每次commit了一个log，要发送ApplyMsg到applyCh里。
+/*
+	Start()需要迅速返回，不要等待日志添加完成。也不保证此日志一定会提交。
+	例如，leader接受了一个命令，append到本地日志，然后被网络隔离了。其他node会选举出新leader。
+	等到此leader回到集群中，会发现本地不对，然后清除本地日志。
+	要求每次commit了一个log，要发送ApplyMsg到applyCh里。- ?
+ */
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	index := -1
 	term := -1
@@ -735,16 +775,3 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	return rf
 }
 
-func testAppend() {
-	var logs []Log
-	logswithph := append(logs, Log{0, "empty"})
-	logswithonelog := append(logswithph, Log{1, "1"})
-	fmt.Println(logswithph)
-	fmt.Println(logswithonelog)
-	testlogs1 := make([]Log, 0)
-	testlogs2 := make([]Log, 0)
-	testlogs1 = append(testlogs1, logswithph[1:]...)
-	testlogs2 = append(testlogs2, logswithonelog[1:]...)
-	fmt.Println(testlogs1)
-	fmt.Println(testlogs2)
-}
