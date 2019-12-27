@@ -60,6 +60,19 @@ const (
 
 var programestarttime time.Time
 
+func RoleString(roleint int) string {
+	switch roleint {
+	case 0:
+		return "FOLLOWER"
+	case 1:
+		return "CANDIDATE"
+	case 2:
+		return "LEADER"
+	default:
+		return "invalid role"
+	}
+}
+
 //
 // A Go object implementing a single Raft peer.
 //
@@ -86,7 +99,7 @@ type Raft struct {
 	/*
 		对于某个server来说，leader需要发送给那个server的index，初始化为leader的last log index + 1。数组长度跟peers长度一样。
 		不断的试探回退。
-	 */
+	*/
 	nextindex []int
 	// 每个server log里最高的匹配leader log的index，初始都为0。用来更新commitindex
 	matchindex []int
@@ -207,13 +220,13 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	defer rf.mu.Unlock()
 	//DPrintf("%v : {term - %v votefor - %v}: handle vote from {index - %v term - %v }", rf.me, rf.currentterm, rf.votedfor, args.CandidateIndex, args.Term)
 	if args.Term < rf.currentterm {
-		DPrintf("[%v]- %v %v {term - %v role - %v}： refuse vote {index - %v term - %v }\n",
-			logid, rf.me, rf.currentterm, rf.role, args.CandidateIndex, args.Term)
+		DPrintf("[%v] %v : {term - %v role - %v}： refuse vote {index - %v term - %v }\n",
+			logid, rf.me, rf.currentterm, RoleString(rf.role), args.CandidateIndex, args.Term)
 		reply.VoteGranted = false
 	} else {
 		if args.Term > rf.currentterm {
 			DPrintf("[%v]%v : {term - %v role - %v}: - change term because recevie vote {index - %v term - %v }\n",
-				logid, rf.me, rf.currentterm, rf.role, args.CandidateIndex, args.Term)
+				logid, rf.me, rf.currentterm, RoleString(rf.role), args.CandidateIndex, args.Term)
 			rf.role = FOLLOWER
 			rf.currentterm = args.Term
 			rf.votedfor = -1
@@ -243,10 +256,10 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	}
 	if reply.VoteGranted {
 		DPrintf("[%v] %v {term - %v role - %v}: accept vote from {index - %v term - %v }",
-			logid, rf.me, rf.currentterm, rf.role, args.CandidateIndex, args.Term)
+			logid, rf.me, rf.currentterm, RoleString(rf.role), args.CandidateIndex, args.Term)
 	} else {
 		DPrintf("[%v] %v {term - %v role - %v}: refuse vote from {index - %v term - %v }",
-			logid, rf.me, rf.currentterm, rf.role, args.CandidateIndex, args.Term)
+			logid, rf.me, rf.currentterm, RoleString(rf.role), args.CandidateIndex, args.Term)
 	}
 	reply.Term = rf.currentterm
 }
@@ -292,7 +305,7 @@ appendEntries()的回应回来
 */
 func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
 	logid := args.LogId
-	DPrintf("[%v] %v: sendRequestVote to %v request, time - %v, args - %+v\n",
+	DPrintf("[%v] %v: sendRequestVote to %v, time - %v, args - %+v\n",
 		logid, args.CandidateIndex, server, time.Since(programestarttime), args)
 	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
 	DPrintf("[%v] %v : sendRequestVote receive %v reply, time - %v, args - %+v reply - %+v\n",
@@ -331,25 +344,25 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	defer rf.mu.Unlock()
 	logid := args.LogId
 	DPrintf("[%v] %v: {term - %v role - %v} receive AppendEntries from %v, args - %+v\n",
-		logid, rf.me, rf.currentterm, rf.role, args.LeaderId, args)
+		logid, rf.me, rf.currentterm, RoleString(rf.role), args.LeaderId, args)
 	if args.Term < rf.currentterm {
 		DPrintf("[%v] %v: {term - %v role - %v} : receive invalid heart beat from %v, args - %+v\n",
-			logid, rf.me, rf.currentterm, rf.role, args.LeaderId, args)
+			logid, rf.me, rf.currentterm, RoleString(rf.role), args.LeaderId, args)
 		reply.Success = false
 	} else {
 		/*
 			合并两类case args.Term == rf.currentterm 和args.Term > rf.currentterm
 			node从网络隔离中新上线。
-		 */
+		*/
 		DPrintf("[%v] %v: {term - %v role - %v} : receive valid heart beat from %v, args - %+v\n",
-			logid, rf.me, rf.currentterm, rf.role, args.LeaderId, args)
+			logid, rf.me, rf.currentterm, RoleString(rf.role), args.LeaderId, args)
 		reply.Success = true
 		rf.currentterm = args.Term
 		rf.role = FOLLOWER
 		rf.votedfor = args.LeaderId
 		rf.leaderid = args.LeaderId
 		DPrintf("[%v] %v: {term - %v role - %v} update last heart beat because receive from %v, "+
-			"%+v\n", logid, rf.me, rf.currentterm, rf.role, args.LeaderId, args)
+			"%+v\n", logid, rf.me, rf.currentterm, RoleString(rf.role), args.LeaderId, args)
 		// 都是合法的，所以要更新心跳时间
 		rf.lastheartbeat = time.Now()
 		/*
@@ -359,8 +372,12 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			2.node1当选为leader后的常规心跳，不用更新node2的leaderid。
 			复制日志的场景需要检测日志，并且将reply.Success = false以让leader发更多的同步日志
 		*/
+		DPrintf("[%v] %v: { term - %v role - %v mylog-%+v mycommitindex - %v remotelog - %+v remotecommitindex - %v }",
+			logid, rf.me, rf.currentterm, RoleString(rf.role), rf.log, rf.commitindex, args.Entries, args.LeaderCommitIndex)
 		if len(rf.log) < args.PrevLogIndex {
 			// 本node没有那么长的log，要leader传更多的日志过来
+			DPrintf("[%v] %v: {term - %v role - %v} mylog is too short, ask leader to pass more entries\n",
+				logid, rf.me, rf.currentterm, RoleString(rf.role))
 			reply.Success = false
 		} else {
 			// 有>=args.PrevLogIndex的日志。检查
@@ -371,10 +388,13 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			// 添加leader发来的其他的日志
 			rf.log = append(rf.log, args.Entries...)
 			for iter := rf.commitindex; iter < args.LeaderCommitIndex; iter++ {
-				// 更新本地的commitindex到leader的commitindex
+				// 没移动一下本地的commitindex，需要发一条消息
 			}
 			DPrintf("[%v] %v: {term - %v role - %v} update commit index from %v to %v\n",
-				logid, rf.me, rf.currentterm, rf.role, rf.commitindex, args.LeaderCommitIndex)
+				logid, rf.me, rf.currentterm, RoleString(rf.role), rf.commitindex, args.LeaderCommitIndex)
+			DPrintf("[%v] %v: {term - %v role - %v} after copy logs - %+v\n",
+				logid, rf.me, rf.currentterm, RoleString(rf.role), rf.log)
+			// 更新本地的commitindex到leader的commitinde
 			rf.commitindex = args.LeaderCommitIndex
 		}
 	}
@@ -401,7 +421,7 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 /*
 	仅仅在lab2a中使用，因为此函数处理不了复制日志的情况。
 	需要被DoAppendEntries()在lab2b中被替换
- */
+*/
 func (rf *Raft) DoHeartBeat() {
 	// 在参考资料中，加入了一个进入的线程数检测，但是我觉得不需要，因为应该只会有一个线程能成功调用DoHeartBeat()
 	for {
@@ -504,21 +524,20 @@ func (rf *Raft) DoVote() {
 						atomic.AddInt64(&voteagree, 1)
 						// 如果获取了足够的投票转为leader，不足够仅仅voteagree++
 						if int(voteagree)*2 > len(rf.peers) {
-							DPrintf("[%v] %v : become leader", logid, rf.me)
+							DPrintf("[%v] %v {term - %v }: become leader",
+								logid, rf.me, rf.currentterm)
 							rf.leaderid = rf.me
 							rf.role = LEADER
 							// 重置leader的nextindex和matchindex
 							// 按照规则，重置为当前candidate的最大logindex + 1
 							rf.nextindex = make([]int, len(rf.peers))
+							rf.matchindex = make([]int, len(rf.peers))
 							lastlogindex := len(rf.log) - 1
 							for j := 0; j < len(rf.peers); j++ {
 								rf.nextindex[j] = lastlogindex + 1
+								rf.matchindex[j] = 0
 							}
-							rf.matchindex = make([]int, len(rf.peers))
-							for k := 0; k < len(rf.peers); k++ {
-								rf.matchindex[k] = 0
-							}
-							go rf.DoHeartBeat()
+							go rf.DoAppendEntries()
 						}
 					}
 					rf.mu.Unlock()
@@ -600,7 +619,7 @@ func (rf *Raft) DoAppendEntries() {
 									由于matchindex增加了，commitindex可能可以增加了
 								*/
 								count := 1 // 超过iter的个数，超过半数即可增加commitindex
-								for j:= 0; j < len(rf.peers); j++ {
+								for j := 0; j < len(rf.peers); j++ {
 									if j != rf.me {
 										if rf.matchindex[j] > iter {
 											count += 1
@@ -608,9 +627,9 @@ func (rf *Raft) DoAppendEntries() {
 									}
 								}
 								// 按照图2的说法，还有一个条件是log[iter].Term == rf.currentterm，这个是什么意思?
-								if count * 2 > len(rf.peers) {
+								if count*2 > len(rf.peers) {
 									DPrintf("[%v] %v : increase commit index from %v to %v",
-										logid, rf.me, rf.commitindex, rf.commitindex + 1)
+										logid, rf.me, rf.commitindex, rf.commitindex+1)
 									rf.commitindex += 1
 								} else {
 									// 当前这个iter的值都过不了，不再判断下一个iter
@@ -646,7 +665,7 @@ func (rf *Raft) DoAppendEntries() {
 	例如，leader接受了一个命令，append到本地日志，然后被网络隔离了。其他node会选举出新leader。
 	等到此leader回到集群中，会发现本地不对，然后清除本地日志。
 	要求每次commit了一个log，要发送ApplyMsg到applyCh里。- ?
- */
+*/
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	index := -1
 	term := -1
@@ -654,13 +673,18 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	// Your code here (2B).
 	if rf.role != LEADER {
 		// 不是leader，直接返回
+		DPrintf("%v : {term - %v role - %v} : receive command %v, refuse\n",
+			rf.me, rf.currentterm, RoleString(rf.role), command)
 		isLeader = false
 	} else {
+		DPrintf("%v : {term - %v role - %v} : receive command %v, accept\n",
+			rf.me, rf.currentterm, RoleString(rf.role), command)
 		rf.mu.Lock()
 		index = len(rf.log)
 		term = rf.currentterm
 		rf.log = append(rf.log, Log{rf.currentterm, command})
-		go rf.DoAppendEntries()
+		// 如果不加这一行，感觉会被周期性的心跳自动解决。
+		//go rf.DoAppendEntries()
 		rf.mu.Unlock()
 	}
 	return index, term, isLeader
@@ -714,7 +738,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.votedfor = -1
 	// 初始情况下，Log应该怎么初始化？因为
 	rf.log = make([]Log, 0)
-	rf.log = append(rf.log, Log{0, "placeholder"})
+	// 估计不能使用这个place holder，会导致lab2b出问题。
+	rf.log = append(rf.log, Log{0, 100})
 	//rf.log = append(rf.log, Log{0, "placeholder"})
 
 	rf.commitindex = 0
@@ -752,7 +777,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 			DPrintf("[%v] %v : sleep %v, at time %v, last heart beat %v\n",
 				logid, rf.me, rf.heartbeattimeout-time.Since(rf.lastheartbeat), time.Since(programestarttime), time.Since(rf.lastheartbeat))
 			time.Sleep(rf.heartbeattimeout - time.Since(rf.lastheartbeat))
-			DPrintf("[%v] %v : wake up at time %v\n", logid, rf.me, time.Since(programestarttime))
+			DPrintf("[%v] %v : { term - %v role - %v } wake up at time %v\n",
+				logid, rf.me, rf.currentterm, RoleString(rf.role), time.Since(programestarttime))
 			// 这里要考虑sleep以后的rf.lastheartbeat被更新了。如果在整个heartbeattimeout期间发现新的心跳，说明要转为
 			// candiate，并发起投票。
 			// 如果不是FOLLOWER，就不管，继续睡眠
@@ -774,4 +800,3 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	return rf
 }
-
