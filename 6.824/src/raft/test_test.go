@@ -98,28 +98,28 @@ func TestReElection2A(t *testing.T) {
 	1.初始没选举出leader，所有都是follower，拒绝接受command。
 	2.选举户一个leader以后，接受command，并且最后成功提交command。
  */
-//func TestBasicAgree2B(t *testing.T) {
-//	servers := 5
-//	cfg := make_config(t, servers, false)
-//	defer cfg.cleanup()
-//
-//	cfg.begin("Test (2B): basic agreement")
-//
-//	iters := 3
-//	for index := 1; index < iters+1; index++ {
-//		nd, _ := cfg.nCommitted(index)
-//		if nd > 0 {
-//			t.Fatalf("some have committed before Start()")
-//		}
-//
-//		xindex := cfg.one(index*100, servers, false)
-//		if xindex != index {
-//			t.Fatalf("got index %v but expected %v", xindex, index)
-//		}
-//	}
-//
-//	cfg.end()
-//}
+func TestBasicAgree2B(t *testing.T) {
+	servers := 5
+	cfg := make_config(t, servers, false)
+	defer cfg.cleanup()
+
+	cfg.begin("Test (2B): basic agreement")
+
+	iters := 3
+	for index := 1; index < iters+1; index++ {
+		nd, _ := cfg.nCommitted(index)
+		if nd > 0 {
+			t.Fatalf("some have committed before Start()")
+		}
+
+		xindex := cfg.one(index*100, servers, false)
+		if xindex != index {
+			t.Fatalf("got index %v but expected %v", xindex, index)
+		}
+	}
+
+	cfg.end()
+}
 
 //func TestFailAgree2B(t *testing.T) {
 //	servers := 3
@@ -152,79 +152,79 @@ func TestReElection2A(t *testing.T) {
 //	cfg.end()
 //}
 
-func TestFailNoAgree2B(t *testing.T) {
-	servers := 5
-	cfg := make_config(t, servers, false)
-	defer cfg.cleanup()
-
-	cfg.begin("Test (2B): no agreement if too many followers disconnect")
-
-	cfg.one(10, servers, false)
-	// 提交command=10的日志
-
-
-	// 3 of 5 followers disconnect
-	leader := cfg.checkOneLeader()
-	DPrintf("disconnect %v %v %v", (leader + 1) % servers, (leader + 2) % servers, (leader + 3) % servers)
-	cfg.disconnect((leader + 1) % servers)
-	cfg.disconnect((leader + 2) % servers)
-	cfg.disconnect((leader + 3) % servers)
-	// 在断开以后，实际上断开的3个节点之间也无法通信，导致有4个网络，只列举一个情况。
-	// [(0,1) (2) (3) (4)]，断开前，0是leader。
-
-	// 20这个命令提交不了，因为(0,1) 不够大多数，但是log还是被写到了0和1的日志中。
-	index, _, ok := cfg.rafts[leader].Start(20)
-	if ok != true {
-		t.Fatalf("leader rejected Start()")
-	}
-	if index != 2 {
-		t.Fatalf("expected index 2, got %v", index)
-	}
-
-	time.Sleep(2 * RaftElectionTimeout)
-
-	n, _ := cfg.nCommitted(index)
-	if n > 0 {
-		t.Fatalf("%v committed but no majority", n)
-	}
-
-	// repair
-	DPrintf("reconnect %v %v %v", (leader + 1) % servers, (leader + 2) % servers, (leader + 3) % servers)
-	cfg.connect((leader + 1) % servers)
-	cfg.connect((leader + 2) % servers)
-	cfg.connect((leader + 3) % servers)
-	// 加入后重新选主
-	/*
-		TODO: 截断逻辑写的有问题！- 无条件截断？
-		if mylastlogterm != args.PrevLogTerm {
-				// 清除本node从PrevLogIndex到末尾的的日志
-				rf.log = rf.log[0:args.PrevLogIndex]
-		}
-		我的老写法。
-		图二中并没说有说follower比leader日志长怎么办，只说如果conflict怎么处理，不同的log index比较看起来没意义。
-
-		这个case挂掉的原因在于:
-		0,1含有两个log entry (2, 10) (2, 20)
-		2,3,4只有一个log entry (2, 10)
-		在2重选为leader以后，日志变为(2, 10), (16, 30), (16, 1000)
-		appendEntries()的处理，现在没有截断0,1的日志。(2, 20)没有commit，应该是无法comit，截断时应该删掉才对。
-
-	 */
-	// the disconnected majority may have chosen a leader from
-	// among their own ranks, forgetting index 2.
-	leader2 := cfg.checkOneLeader()
-	index2, _, ok2 := cfg.rafts[leader2].Start(30)
-	if ok2 == false {
-		t.Fatalf("leader2 rejected Start()")
-	}
-	if index2 < 2 || index2 > 3 {
-		t.Fatalf("unexpected index %v", index2)
-	}
-
-	cfg.one(1000, servers, true)
-
-	cfg.end()
-}
+//func TestFailNoAgree2B(t *testing.T) {
+//	servers := 5
+//	cfg := make_config(t, servers, false)
+//	defer cfg.cleanup()
+//
+//	cfg.begin("Test (2B): no agreement if too many followers disconnect")
+//
+//	cfg.one(10, servers, false)
+//	// 提交command=10的日志
+//
+//
+//	// 3 of 5 followers disconnect
+//	leader := cfg.checkOneLeader()
+//	DPrintf("disconnect %v %v %v", (leader + 1) % servers, (leader + 2) % servers, (leader + 3) % servers)
+//	cfg.disconnect((leader + 1) % servers)
+//	cfg.disconnect((leader + 2) % servers)
+//	cfg.disconnect((leader + 3) % servers)
+//	// 在断开以后，实际上断开的3个节点之间也无法通信，导致有4个网络，只列举一个情况。
+//	// [(0,1) (2) (3) (4)]，断开前，0是leader。
+//
+//	// 20这个命令提交不了，因为(0,1) 不够大多数，但是log还是被写到了0和1的日志中。
+//	index, _, ok := cfg.rafts[leader].Start(20)
+//	if ok != true {
+//		t.Fatalf("leader rejected Start()")
+//	}
+//	if index != 2 {
+//		t.Fatalf("expected index 2, got %v", index)
+//	}
+//
+//	time.Sleep(2 * RaftElectionTimeout)
+//
+//	n, _ := cfg.nCommitted(index)
+//	if n > 0 {
+//		t.Fatalf("%v committed but no majority", n)
+//	}
+//
+//	// repair
+//	DPrintf("reconnect %v %v %v", (leader + 1) % servers, (leader + 2) % servers, (leader + 3) % servers)
+//	cfg.connect((leader + 1) % servers)
+//	cfg.connect((leader + 2) % servers)
+//	cfg.connect((leader + 3) % servers)
+//	// 加入后重新选主
+//	/*
+//		TODO: 截断逻辑写的有问题！- 无条件截断？
+//		if mylastlogterm != args.PrevLogTerm {
+//				// 清除本node从PrevLogIndex到末尾的的日志
+//				rf.log = rf.log[0:args.PrevLogIndex]
+//		}
+//		我的老写法。
+//		图二中并没说有说follower比leader日志长怎么办，只说如果conflict怎么处理，不同的log index比较看起来没意义。
+//
+//		这个case挂掉的原因在于:
+//		0,1含有两个log entry (2, 10) (2, 20)
+//		2,3,4只有一个log entry (2, 10)
+//		在2重选为leader以后，日志变为(2, 10), (16, 30), (16, 1000)
+//		appendEntries()的处理，现在没有截断0,1的日志。(2, 20)没有commit，应该是无法comit，截断时应该删掉才对。
+//
+//	 */
+//	// the disconnected majority may have chosen a leader from
+//	// among their own ranks, forgetting index 2.
+//	leader2 := cfg.checkOneLeader()
+//	index2, _, ok2 := cfg.rafts[leader2].Start(30)
+//	if ok2 == false {
+//		t.Fatalf("leader2 rejected Start()")
+//	}
+//	if index2 < 2 || index2 > 3 {
+//		t.Fatalf("unexpected index %v", index2)
+//	}
+//
+//	cfg.one(1000, servers, true)
+//
+//	cfg.end()
+//}
 
 //func TestConcurrentStarts2B(t *testing.T) {
 //	servers := 3

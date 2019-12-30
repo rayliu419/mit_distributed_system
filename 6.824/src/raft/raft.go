@@ -246,8 +246,8 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		candidatelogindex := args.LastLogIndex
 		candidatelogterm := args.LastLogItemTerm
 		mylastlogindex := len(rf.log) - 1
-		mylastlogindex, mylastlogterm := rf.ResetLogIndexAndTerm(mylastlogindex)
-		//mylogterm := rf.log[mylogindex].Term
+		//mylastlogindex, mylastlogterm := rf.ResetLogIndexAndTerm(mylastlogindex)
+		mylastlogterm := rf.log[mylastlogindex].Term
 		// 计算谁的日志更新
 		candidatenewer := LogNewer(candidatelogindex, candidatelogterm, mylastlogindex, mylastlogterm)
 		voteconditon := false
@@ -411,7 +411,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	DPrintf("[%v] %v: { term - %v role - %v mylog-%+v mycommitindex - %v remotelog - %+v remotecommitindex - %v }",
 		logid, rf.me, rf.currentterm, RoleString(rf.role), rf.log, rf.commitindex, args.Entries, args.LeaderCommitIndex)
 	mylastlogindex := len(rf.log) - 1
-	mylastlogindex, mylastlogterm := rf.ResetLogIndexAndTerm(mylastlogindex)
+	//mylastlogindex, mylastlogterm := rf.ResetLogIndexAndTerm(mylastlogindex)
+	//mylastlogterm := rf.log[mylastlogindex].Term
 	if mylastlogindex < args.PrevLogIndex {
 		// 本node没有那么长的log，要leader传更多的日志过来
 		DPrintf("[%v] %v: {term - %v role - %v} mylog is too short, ask leader to pass more entries\n",
@@ -419,42 +420,42 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		reply.Success = false
 	} else {
 		// 本node的日志长度>=leader的长度。
-		if args.PrevLogIndex == 0 && mylastlogindex == 0 && args.PrevLogTerm != 0 && args.PrevLogTerm != mylastlogterm {
-			/*
-				一样为0，但是有可能还需要传更多的日志，因为0可能代表leader有一个日志。
-				PrevLogIndex和mylastlogindex=0，但是term不相等， 也需要传更多的日志。但是term不相等有两种情况:
-				1.term不相等，且都会为0。上一条日志follower也需要leader同步过来，本地的日志不是正确日志。
-				2.term不相等，follower为0。follower实际上是空日志，leader还需要将第一条日志传过来。
-				PrevLogTerm = 0，mylastlogindex != 0 不需要重传，follower本地的日志需要删除。
-			*/
-			reply.Success = false
-		} else {
-			// 传来的日志足够长来纠正本地的日志了。
-			// 清除本node从PrevLogIndex到末尾的的日志
-			// golang截断操作符，左闭合又开。如果左边==右边，则为空。
-			// 分开处理两种0。
-			rf.log = rf.log[0:args.PrevLogIndex + 1]
-			// 添加leader发来的其他的日志
-			rf.log = append(rf.log, args.Entries...)
-			for iter := rf.commitindex; iter < args.LeaderCommitIndex; iter++ {
-				// 每移动一下本地的commitindex，需要发一条消息
-				DPrintf("[%v] %v: {term - %v role - %v} commit command %v at index %v\n",
-					logid, rf.me, rf.currentterm, RoleString(rf.role), rf.log[iter].Command, iter+1)
-				rf.commitchan <- ApplyMsg{true, rf.log[iter].Command, iter + 1}
-			}
-			DPrintf("[%v] %v: {term - %v role - %v} after copy logs - %+v\n",
-				logid, rf.me, rf.currentterm, RoleString(rf.role), rf.log)
-			if rf.commitindex != args.LeaderCommitIndex {
-				DPrintf("[%v] %v: {term - %v role - %v} update commit index from %v to %v\n",
-					logid, rf.me, rf.currentterm, RoleString(rf.role), rf.commitindex, args.LeaderCommitIndex)
-			} else {
-				DPrintf("[%v] %v: {term - %v role - %v} kepp commit index %v\n",
-					logid, rf.me, rf.currentterm, RoleString(rf.role), rf.commitindex)
-			}
-			// 更新本地的commitindex到leader的commitindex
-			rf.commitindex = args.LeaderCommitIndex
+		//if args.PrevLogIndex == 0 && mylastlogindex == 0 && args.PrevLogTerm != 0 && args.PrevLogTerm != mylastlogterm {
+		//	/*
+		//		一样为0，但是有可能还需要传更多的日志，因为0可能代表leader有一个日志。
+		//		PrevLogIndex和mylastlogindex=0，但是term不相等， 也需要传更多的日志。但是term不相等有两种情况:
+		//		1.term不相等，且都会为0。上一条日志follower也需要leader同步过来，本地的日志不是正确日志。
+		//		2.term不相等，follower为0。follower实际上是空日志，leader还需要将第一条日志传过来。
+		//		PrevLogTerm = 0，mylastlogindex != 0 不需要重传，follower本地的日志需要删除。
+		//	*/
+		//	reply.Success = false
+		//} else {
+		// 传来的日志足够长来纠正本地的日志了。
+		// 清除本node从PrevLogIndex到末尾的的日志
+		// golang截断操作符，左闭合又开。如果左边==右边，则为空。
+		// 分开处理两种0。
+		rf.log = rf.log[0 : args.PrevLogIndex + 1]
+		// 添加leader发来的其他的日志
+		rf.log = append(rf.log, args.Entries...)
+		for iter := rf.commitindex; iter < args.LeaderCommitIndex; iter++ {
+			// 每移动一下本地的commitindex，需要发一条消息
+			DPrintf("[%v] %v: {term - %v role - %v} commit command %v at index %v\n",
+				logid, rf.me, rf.currentterm, RoleString(rf.role), rf.log[iter].Command, iter)
+			rf.commitchan <- ApplyMsg{true, rf.log[iter].Command, iter}
 		}
+		DPrintf("[%v] %v: {term - %v role - %v} after copy logs - %+v\n",
+			logid, rf.me, rf.currentterm, RoleString(rf.role), rf.log)
+		if rf.commitindex != args.LeaderCommitIndex {
+			DPrintf("[%v] %v: {term - %v role - %v} update commit index from %v to %v\n",
+				logid, rf.me, rf.currentterm, RoleString(rf.role), rf.commitindex, args.LeaderCommitIndex)
+		} else {
+			DPrintf("[%v] %v: {term - %v role - %v} kepp commit index %v\n",
+				logid, rf.me, rf.currentterm, RoleString(rf.role), rf.commitindex)
+		}
+		// 更新本地的commitindex到leader的commitindex
+		rf.commitindex = args.LeaderCommitIndex
 	}
+	//}
 	reply.Term = rf.currentterm
 }
 
@@ -551,8 +552,8 @@ func (rf *Raft) DoVote() {
 		term := rf.currentterm
 		candidateindex := rf.me
 		lastlogindex := len(rf.log) - 1
-		//lastlogterm := rf.log[lastlogindex].Term
-		lastlogindex, lastlogterm := rf.ResetLogIndexAndTerm(lastlogindex)
+		lastlogterm := rf.log[lastlogindex].Term
+		//lastlogindex, lastlogterm := rf.ResetLogIndexAndTerm(lastlogindex)
 		rf.mu.Unlock()
 		for i := 0; i < len(rf.peers); i++ {
 			// 向各个node发出RequestVote
@@ -593,7 +594,7 @@ func (rf *Raft) DoVote() {
 							rf.matchindex = make([]int, len(rf.peers))
 							lastlogindex := len(rf.log) - 1
 							for j := 0; j < len(rf.peers); j++ {
-								rf.nextindex[j] = lastlogindex + 1
+								rf.nextindex[j] = lastlogindex
 								rf.matchindex[j] = 0
 							}
 							go rf.DoAppendEntries()
@@ -643,11 +644,13 @@ func (rf *Raft) DoAppendEntries() {
 						这个地方不知道会不会有问题，debug时再看看。
 					*/
 					startindex := rf.nextindex[nodeindex]
-					endindex := len(rf.log)
-					entries = append(entries, rf.log[startindex:]...)
-					args.PrevLogIndex = startindex - 1
-					//args.PrevLogTerm = rf.log[startindex-1].Term
-					args.PrevLogIndex, args.PrevLogTerm = rf.ResetLogIndexAndTerm(args.PrevLogIndex)
+					DPrintf("startindex - %v", startindex)
+					entries = append(entries, rf.log[startindex + 1:]...)
+					endindex := startindex + len(entries)
+					DPrintf("endindex - %v", endindex)
+					args.PrevLogIndex = startindex
+					args.PrevLogTerm = rf.log[startindex].Term
+					//args.PrevLogIndex, args.PrevLogTerm = rf.ResetLogIndexAndTerm(args.PrevLogIndex)
 					args.Entries = entries
 					reply.LogId = logid
 					rf.mu.Unlock()
@@ -679,6 +682,7 @@ func (rf *Raft) DoAppendEntries() {
 									由于matchindex增加了，commitindex可能可以增加了
 								*/
 								count := 1 // 超过iter的个数，超过半数即可增加commitindex
+								DPrintf("[%v] %v : matchindex - %+v", logid, rf.me, rf.matchindex)
 								for j := 0; j < len(rf.peers); j++ {
 									if j != rf.me {
 										if rf.matchindex[j] > iter {
@@ -691,8 +695,8 @@ func (rf *Raft) DoAppendEntries() {
 									DPrintf("[%v] %v : increase commit index from %v to %v",
 										logid, rf.me, rf.commitindex, rf.commitindex+1)
 									DPrintf("[%v] %v: {term - %v role - %v} commit command %v at index %v\n",
-										logid, rf.me, rf.currentterm, RoleString(rf.role), rf.log[rf.commitindex].Command, rf.commitindex+1)
-									rf.commitchan <- ApplyMsg{true, rf.log[rf.commitindex].Command, rf.commitindex + 1}
+										logid, rf.me, rf.currentterm, RoleString(rf.role), rf.log[rf.commitindex].Command, rf.commitindex)
+									rf.commitchan <- ApplyMsg{true, rf.log[rf.commitindex].Command, rf.commitindex}
 									rf.commitindex += 1
 								} else {
 									// 当前这个iter的值都过不了，不再判断下一个iter
@@ -733,6 +737,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	index := -1
 	term := -1
 	isLeader := true
+	logid := rand.Int()
 	// Your code here (2B).
 	if rf.role != LEADER {
 		// 不是leader，直接返回
@@ -743,11 +748,13 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		DPrintf("%v : {term - %v role - %v} : receive command %v, accept\n",
 			rf.me, rf.currentterm, RoleString(rf.role), command)
 		rf.mu.Lock()
-		index = len(rf.log) + 1
+		index = len(rf.log)
 		term = rf.currentterm
 		rf.log = append(rf.log, Log{rf.currentterm, command})
 		// 如果不加这一行，感觉会被周期性的心跳自动解决。
 		//go rf.DoAppendEntries()
+		DPrintf("[%v] %v : accept command {index - %v term - %v command - %v}",
+			logid, rf.me, index, rf.currentterm, command)
 		rf.mu.Unlock()
 	}
 	return index, term, isLeader
@@ -804,9 +811,11 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	/*
 		不能使用这个place holder，会导致lab2b出问题。- 不对，实际上是因为没发送消息到applyCh
 		rf.log = append(rf.log, Log{0, "placeholder"})，使用一个placeholder能较大的简化代码。
-		//这里有一个问题，就是空log怎么表示？现在的设计方法是认为空日志是 index=0,term=0，有一个日志的情况是index=0,term!=0
+		//这里有一个问题，就是空log怎么表示？
+		1.现在的设计方法是认为空日志是 index=0,term=0，有一个日志的情况是index=0,term!=0
+		2.设置placeholder，能行吗？
 	*/
-
+	rf.log = append(rf.log, Log{0, -1})
 	rf.commitindex = 0
 	rf.lastapplied = 0
 	// nextindex, matchindex变为leader再使用
