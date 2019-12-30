@@ -194,7 +194,7 @@ type RequestVoteReply struct {
 	LogId       int  // debug
 }
 
-// ugly，怎么使用golang写的更好
+// LogNewer这个函数，比较的到底是log的index/term还是比较的commit log的index/term?
 func LogNewer(candidatelogindex int, candidatelogterm int, mylogindex int, mylogterm int) bool {
 	candidatenewer := false
 	if candidatelogterm > mylogterm {
@@ -235,11 +235,13 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		reply.VoteGranted = false
 	} else {
 		if args.Term > rf.currentterm {
-			DPrintf("[%v]%v : {term - %v role - %v}: - change term because recevie vote {index - %v term - %v }\n",
+			DPrintf("[%v] %v : {term - %v role - %v}: - change term because recevie vote from %v { term - %v }\n",
 				logid, rf.me, rf.currentterm, RoleString(rf.role), args.CandidateIndex, args.Term)
 			rf.role = FOLLOWER
 			rf.currentterm = args.Term
 			rf.votedfor = -1
+			// 需要重设leaderid
+			rf.leaderid = -1
 		}
 		candidatelogindex := args.LastLogIndex
 		candidatelogterm := args.LastLogItemTerm
@@ -259,17 +261,20 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 			//DPrintf("accept %v - %v\n", args.CandidateIndex, rf.me)
 			reply.VoteGranted = true
 			rf.votedfor = args.CandidateIndex
-			rf.role = FOLLOWER // 从图表中好像没有这个设置?需要这个地方吗？
+			// 下面这几行在图2中好像没有指明
+			rf.role = FOLLOWER
+			rf.leaderid = -1
+			//rf.lastheartbeat = time.Now()
 		} else {
 			//DPrintf("refuse %v - %v\n", args.CandidateIndex, rf.me)
 			reply.VoteGranted = false
 		}
 	}
 	if reply.VoteGranted {
-		DPrintf("[%v] %v {term - %v role - %v}: accept vote from {index - %v term - %v }",
+		DPrintf("[%v] %v : {term - %v role - %v}: accept vote from %v { term - %v }",
 			logid, rf.me, rf.currentterm, RoleString(rf.role), args.CandidateIndex, args.Term)
 	} else {
-		DPrintf("[%v] %v {term - %v role - %v}: refuse vote from {index - %v term - %v }",
+		DPrintf("[%v] %v : {term - %v role - %v}: refuse vote from  %v { term - %v }",
 			logid, rf.me, rf.currentterm, RoleString(rf.role), args.CandidateIndex, args.Term)
 	}
 	reply.Term = rf.currentterm
@@ -326,6 +331,7 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 		rf.currentterm = reply.Term
 		rf.role = FOLLOWER
 		rf.votedfor = -1
+		rf.leaderid = -1
 		rf.mu.Unlock()
 	}
 	return ok
@@ -360,74 +366,93 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		DPrintf("[%v] %v: {term - %v role - %v} : receive invalid heart beat from %v, args - %+v\n",
 			logid, rf.me, rf.currentterm, RoleString(rf.role), args.LeaderId, args)
 		reply.Success = false
-	} else {
-		/*
-			合并两类case args.Term == rf.currentterm 和args.Term > rf.currentterm
-			node从网络隔离中新上线。
-		*/
-		DPrintf("[%v] %v: {term - %v role - %v} : receive valid heart beat from %v, args - %+v\n",
+		reply.Term = rf.currentterm
+		return
+	}
+	if args.Term > rf.currentterm {
+		DPrintf("[%v] %v : {term - %v role - %v}: - change term because recevie heart beat from %v args - %+v\n",
 			logid, rf.me, rf.currentterm, RoleString(rf.role), args.LeaderId, args)
-		reply.Success = true
-		rf.currentterm = args.Term
 		rf.role = FOLLOWER
+		rf.currentterm = args.Term
 		rf.votedfor = args.LeaderId
 		rf.leaderid = args.LeaderId
-		DPrintf("[%v] %v: {term - %v role - %v} update last heart beat because receive from %v, "+
-			"%+v\n", logid, rf.me, rf.currentterm, RoleString(rf.role), args.LeaderId, args)
-		// 都是合法的，所以要更新心跳时间
-		rf.lastheartbeat = time.Now()
-		/*
-			心跳场景
-			1.node1和node2同时发起RequestVote，node1变为leader，node2还在等待vote的回复，接着node1开始发心跳，node2接到
-			此心跳，需要更新node2的leaderid。
-			2.node1当选为leader后的常规心跳，不用更新node2的leaderid。
-			复制日志的场景需要检测日志，并且将reply.Success = false以让leader发更多的同步日志
-		*/
-		DPrintf("[%v] %v: { term - %v role - %v mylog-%+v mycommitindex - %v remotelog - %+v remotecommitindex - %v }",
-			logid, rf.me, rf.currentterm, RoleString(rf.role), rf.log, rf.commitindex, args.Entries, args.LeaderCommitIndex)
-		mylastlogindex := len(rf.log) - 1
-		mylastlogindex, mylastlogterm := rf.ResetLogIndexAndTerm(mylastlogindex)
-		/*
-			reply.Success = false代表leader还需要发送更多的日志以便follower拷贝
-		 */
-		if mylastlogindex < args.PrevLogIndex {
-			// 本node没有那么长的log，要leader传更多的日志过来
-			DPrintf("[%v] %v: {term - %v role - %v} mylog is too short, ask leader to pass more entries\n",
-				logid, rf.me, rf.currentterm, RoleString(rf.role))
+	}
+	if rf.currentterm == args.Term && rf.leaderid != -1 && rf.leaderid != args.LeaderId {
+		DPrintf("[%v] %v: {term - %v role - %v} : receive invalid heart beat "+
+			"from %v but current term leader is determinded to %v, args - %+v\n",
+			logid, rf.me, rf.currentterm, RoleString(rf.role), args.LeaderId, rf.leaderid, args)
+		reply.Success = false
+		reply.Term = rf.currentterm
+		return
+	}
+	/*
+		下面的都是合法的appendEntries的请求。
+		前面的reply.Success=false并不更新心跳，因为不是来自于合理的leader的情况。
+		以下的都需要更新心跳时间，因为
+	*/
+	DPrintf("[%v] %v: {term - %v role - %v} receive valid heart beat from %v, args - %+v\n",
+		logid, rf.me, rf.currentterm, RoleString(rf.role), args.LeaderId, args)
+	reply.Success = true
+	rf.currentterm = args.Term
+	rf.role = FOLLOWER
+	rf.votedfor = args.LeaderId
+	rf.leaderid = args.LeaderId
+	DPrintf("[%v] %v: {term - %v role - %v} update last heart beat because receive from %v, "+
+		"%+v\n", logid, rf.me, rf.currentterm, RoleString(rf.role), args.LeaderId, args)
+	// 都是合法的，所以要更新心跳时间
+	rf.lastheartbeat = time.Now()
+	/*
+		心跳场景
+		1.node1和node2同时发起RequestVote，node1变为leader，node2还在等待vote的回复，接着node1开始发心跳，node2接到
+		此心跳，需要更新node2的leaderid。
+		2.node1当选为leader后的常规心跳，不用更新node2的leaderid。
+		复制日志的场景需要检测日志，并且将reply.Success = false以让leader发更多的同步日志
+	*/
+	DPrintf("[%v] %v: { term - %v role - %v mylog-%+v mycommitindex - %v remotelog - %+v remotecommitindex - %v }",
+		logid, rf.me, rf.currentterm, RoleString(rf.role), rf.log, rf.commitindex, args.Entries, args.LeaderCommitIndex)
+	mylastlogindex := len(rf.log) - 1
+	mylastlogindex, mylastlogterm := rf.ResetLogIndexAndTerm(mylastlogindex)
+	if mylastlogindex < args.PrevLogIndex {
+		// 本node没有那么长的log，要leader传更多的日志过来
+		DPrintf("[%v] %v: {term - %v role - %v} mylog is too short, ask leader to pass more entries\n",
+			logid, rf.me, rf.currentterm, RoleString(rf.role))
+		reply.Success = false
+	} else {
+		// 本node的日志长度>=leader的长度。
+		if args.PrevLogIndex == 0 && mylastlogindex == 0 && args.PrevLogTerm != 0 && args.PrevLogTerm != mylastlogterm {
+			/*
+				一样为0，但是有可能还需要传更多的日志，因为0可能代表leader有一个日志。
+				PrevLogIndex和mylastlogindex=0，但是term不相等， 也需要传更多的日志。但是term不相等有两种情况:
+				1.term不相等，且都会为0。上一条日志follower也需要leader同步过来，本地的日志不是正确日志。
+				2.term不相等，follower为0。follower实际上是空日志，leader还需要将第一条日志传过来。
+				PrevLogTerm = 0，mylastlogindex != 0 不需要重传，follower本地的日志需要删除。
+			*/
 			reply.Success = false
 		} else {
-			if args.PrevLogIndex == 0 && mylastlogindex == 0 && args.PrevLogTerm != 0 && args.PrevLogTerm != mylastlogterm {
-				/*
-					PrevLogIndex和mylastlogindex=0，但是term不相等， 也需要传更多的日志。但是term不相等有两种情况:
-					1.term不相等，且都会为0。上一条日志follower也需要leader同步过来，本地的日志不是正确日志。
-					2.term不相等，follower为0。follower实际上是空日志，leader还需要将第一条日志传过来。
-					PrevLogTerm = 0，mylastlogindex != 0 不需要重传，follower本地的日志需要删除。
-				 */
-				reply.Success = false
-			} else {
-				// 有>=args.PrevLogIndex的日志。检查
-				if mylastlogterm != args.PrevLogTerm {
-					// 清除本node从PrevLogIndex到末尾的的日志
-					rf.log = rf.log[0:args.PrevLogIndex]
-				}
-				// 添加leader发来的其他的日志
-				rf.log = append(rf.log, args.Entries...)
-				for iter := rf.commitindex; iter < args.LeaderCommitIndex; iter++ {
-					// 每移动一下本地的commitindex，需要发一条消息
-					rf.commitchan <- ApplyMsg{true, rf.log[iter].Command, iter + 1}
-				}
-				DPrintf("[%v] %v: {term - %v role - %v} after copy logs - %+v\n",
-					logid, rf.me, rf.currentterm, RoleString(rf.role), rf.log)
-				if rf.commitindex != args.LeaderCommitIndex {
-					DPrintf("[%v] %v: {term - %v role - %v} update commit index from %v to %v\n",
-						logid, rf.me, rf.currentterm, RoleString(rf.role), rf.commitindex, args.LeaderCommitIndex)
-				} else {
-					DPrintf("[%v] %v: {term - %v role - %v} kepp commit index %v\n",
-						logid, rf.me, rf.currentterm, RoleString(rf.role), rf.commitindex)
-				}
-				// 更新本地的commitindex到leader的commitindex
-				rf.commitindex = args.LeaderCommitIndex
+			// 传来的日志足够长来纠正本地的日志了。
+			// 清除本node从PrevLogIndex到末尾的的日志
+			// golang截断操作符，左闭合又开。如果左边==右边，则为空。
+			// 分开处理两种0。
+			rf.log = rf.log[0:args.PrevLogIndex + 1]
+			// 添加leader发来的其他的日志
+			rf.log = append(rf.log, args.Entries...)
+			for iter := rf.commitindex; iter < args.LeaderCommitIndex; iter++ {
+				// 每移动一下本地的commitindex，需要发一条消息
+				DPrintf("[%v] %v: {term - %v role - %v} commit command %v at index %v\n",
+					logid, rf.me, rf.currentterm, RoleString(rf.role), rf.log[iter].Command, iter+1)
+				rf.commitchan <- ApplyMsg{true, rf.log[iter].Command, iter + 1}
 			}
+			DPrintf("[%v] %v: {term - %v role - %v} after copy logs - %+v\n",
+				logid, rf.me, rf.currentterm, RoleString(rf.role), rf.log)
+			if rf.commitindex != args.LeaderCommitIndex {
+				DPrintf("[%v] %v: {term - %v role - %v} update commit index from %v to %v\n",
+					logid, rf.me, rf.currentterm, RoleString(rf.role), rf.commitindex, args.LeaderCommitIndex)
+			} else {
+				DPrintf("[%v] %v: {term - %v role - %v} kepp commit index %v\n",
+					logid, rf.me, rf.currentterm, RoleString(rf.role), rf.commitindex)
+			}
+			// 更新本地的commitindex到leader的commitindex
+			rf.commitindex = args.LeaderCommitIndex
 		}
 	}
 	reply.Term = rf.currentterm
@@ -435,16 +460,17 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
 	logid := args.LogId
-	DPrintf("[%v] %v: sendAppendEntries to %v request, time - %v, args - %+v\n",
+	DPrintf("[%v] %v : sendAppendEntries to %v request, time - %v, args - %+v\n",
 		logid, rf.me, server, time.Since(programestarttime), args)
 	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
-	DPrintf("[%v] %v: sendAppendEntries receive %v reply, time - %v, args - %+v, reply - %+v\n",
+	DPrintf("[%v] %v : sendAppendEntries receive %v reply, time - %v, args - %+v, reply - %+v\n",
 		logid, rf.me, server, time.Since(programestarttime), args, reply)
 	if reply.Term > rf.currentterm {
 		rf.mu.Lock()
 		rf.currentterm = reply.Term
 		rf.role = FOLLOWER
 		rf.votedfor = -1
+		rf.leaderid = -1
 		rf.mu.Unlock()
 	}
 	return ok
@@ -557,7 +583,7 @@ func (rf *Raft) DoVote() {
 						atomic.AddInt64(&voteagree, 1)
 						// 如果获取了足够的投票转为leader，不足够仅仅voteagree++
 						if int(voteagree)*2 > len(rf.peers) {
-							DPrintf("[%v] %v {term - %v }: become leader",
+							DPrintf("[%v] %v : {term - %v } become leader",
 								logid, rf.me, rf.currentterm)
 							rf.leaderid = rf.me
 							rf.role = LEADER
@@ -664,6 +690,8 @@ func (rf *Raft) DoAppendEntries() {
 								if count*2 > len(rf.peers) {
 									DPrintf("[%v] %v : increase commit index from %v to %v",
 										logid, rf.me, rf.commitindex, rf.commitindex+1)
+									DPrintf("[%v] %v: {term - %v role - %v} commit command %v at index %v\n",
+										logid, rf.me, rf.currentterm, RoleString(rf.role), rf.log[rf.commitindex].Command, rf.commitindex+1)
 									rf.commitchan <- ApplyMsg{true, rf.log[rf.commitindex].Command, rf.commitindex + 1}
 									rf.commitindex += 1
 								} else {
@@ -812,8 +840,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 				例如初始3个raft node一起启动，在睡眠了一段时间后没有收到心跳，触发选举。重新回到这个地方时，如果没有后面重置，由于lastheart还没修改过
 				rf.heartbeattimeout - time.Since(rf.lastheartbeat)会是负值或者接近于0，导致此node马上又发起第二轮选举。
 			*/
-			DPrintf("[%v] %v : sleep %v, at time %v, last heart beat %v\n",
-				logid, rf.me, rf.heartbeattimeout-time.Since(rf.lastheartbeat), time.Since(programestarttime), time.Since(rf.lastheartbeat))
+			//DPrintf("[%v] %v : sleep %v, at time %v, last heart beat %v\n",
+			//	logid, rf.me, rf.heartbeattimeout-time.Since(rf.lastheartbeat), time.Since(programestarttime), time.Since(rf.lastheartbeat))
 			time.Sleep(rf.heartbeattimeout - time.Since(rf.lastheartbeat))
 			DPrintf("[%v] %v : { term - %v role - %v entries - %+v commitindex - %v} wake up at time %v\n",
 				logid, rf.me, rf.currentterm, RoleString(rf.role), rf.log, rf.commitindex, time.Since(programestarttime))
