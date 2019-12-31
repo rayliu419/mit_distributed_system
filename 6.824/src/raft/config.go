@@ -180,6 +180,7 @@ func (cfg *config) start1(i int) {
 					}
 				}
 				_, prevok := cfg.logs[i][m.CommandIndex-1]
+				// 提交的log存到map里，map[CommandIndex] =command
 				cfg.logs[i][m.CommandIndex] = v
 				if m.CommandIndex > cfg.maxIndex {
 					cfg.maxIndex = m.CommandIndex
@@ -309,7 +310,7 @@ func (cfg *config) checkOneLeader() int {
 				}
 			}
 		}
-
+		// 每个term存了一个leader数组，检查每个term只有一个leader。
 		lastTermWithLeader := -1
 		for term, leaders := range leaders {
 			if len(leaders) > 1 {
@@ -357,16 +358,20 @@ func (cfg *config) checkNoLeader() {
 }
 
 // how many servers think a log entry is committed?
+/*
+	给出index，返回在这个index上提交的node个数和command。如果在相同的index上command不同，会报错。
+	注意这个command得是提交了的！
+ */
 func (cfg *config) nCommitted(index int) (int, interface{}) {
 	count := 0
 	cmd := -1
+	DPrintf("config.go commit logs - +%v", cfg.logs)
 	for i := 0; i < len(cfg.rafts); i++ {
 		if cfg.applyErr[i] != "" {
 			cfg.t.Fatal(cfg.applyErr[i])
 		}
 
 		cfg.mu.Lock()
-		DPrintf("config.go raft[%v] logs - +%v index - %v", i, cfg.logs[i], index)
 		cmd1, ok := cfg.logs[i][index]
 		cfg.mu.Unlock()
 
@@ -425,6 +430,7 @@ func (cfg *config) wait(index int, n int, startTerm int) interface{} {
 // times, in case a leader fails just after Start().
 // if retry==false, calls Start() only once, in order
 // to simplify the early Lab 2B tests.
+
 func (cfg *config) one(cmd int, expectedServers int, retry bool) int {
 	t0 := time.Now()
 	starts := 0
@@ -447,14 +453,13 @@ func (cfg *config) one(cmd int, expectedServers int, retry bool) int {
 				}
 			}
 		}
-		DPrintf("config.go index - %v", index)
+
 		if index != -1 {
 			// somebody claimed to be the leader and to have
 			// submitted our command; wait a while for agreement.
 			t1 := time.Now()
 			for time.Since(t1).Seconds() < 2 {
 				nd, cmd1 := cfg.nCommitted(index)
-				DPrintf("config.go nd - %v cmd1 - %v", nd, cmd1)
 				if nd > 0 && nd >= expectedServers {
 					// committed
 					if cmd2, ok := cmd1.(int); ok && cmd2 == cmd {

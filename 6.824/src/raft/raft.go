@@ -313,11 +313,10 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 /* RPC这个模块看起来work的方式我还有一些没明白
 sendRequestVote会阻塞，所以要注意使用goroutine来调用
 这里的通信问题是:
-1.例如sendRequestVote()发送出去以后，收到的回复可能是long delay，也可能是丢失或者乱序等，但是不会requestVote()出去,
-appendEntries()的回应回来
-2.不会是sendRequestVote1()请求出去，sendRequestVote2()的reply回来。
-3.这里的乱序指的是，sendRequestVote1先发，sendRequestVote2后发，但是可能sendRequestVote2的回复先回来。
-4.考虑到通信都是使用一个端口，是不是上面的理解错误了？testing的代码也需要看，确认这些错误的行为包括哪些。
+1.例如sendRequestVote()发送出去以后，收到的回复可能是long delay，突然收到一个很早前发出去的回复。
+2.网络隔离。直接某个node就没了，它发的也出不去，它收也收不到其他node的请求。
+3.乱序，什么样的情况？
+一般的情况下，每次通信都是同一个端口吗？如果是同一个端口，TCP协议应该保证了是没法乱序的吧？
 */
 func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
 	logid := args.LogId
@@ -419,17 +418,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			logid, rf.me, rf.currentterm, RoleString(rf.role))
 		reply.Success = false
 	} else {
-		// 本node的日志长度>=leader的长度。
-		//if args.PrevLogIndex == 0 && mylastlogindex == 0 && args.PrevLogTerm != 0 && args.PrevLogTerm != mylastlogterm {
-		//	/*
-		//		一样为0，但是有可能还需要传更多的日志，因为0可能代表leader有一个日志。
-		//		PrevLogIndex和mylastlogindex=0，但是term不相等， 也需要传更多的日志。但是term不相等有两种情况:
-		//		1.term不相等，且都会为0。上一条日志follower也需要leader同步过来，本地的日志不是正确日志。
-		//		2.term不相等，follower为0。follower实际上是空日志，leader还需要将第一条日志传过来。
-		//		PrevLogTerm = 0，mylastlogindex != 0 不需要重传，follower本地的日志需要删除。
-		//	*/
-		//	reply.Success = false
-		//} else {
 		// 传来的日志足够长来纠正本地的日志了。
 		// 清除本node从PrevLogIndex到末尾的的日志
 		// golang截断操作符，左闭合又开。如果左边==右边，则为空。
@@ -439,9 +427,10 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		rf.log = append(rf.log, args.Entries...)
 		for iter := rf.commitindex; iter < args.LeaderCommitIndex; iter++ {
 			// 每移动一下本地的commitindex，需要发一条消息
+			tryindex := iter + 1
 			DPrintf("[%v] %v: {term - %v role - %v} commit command %v at index %v\n",
-				logid, rf.me, rf.currentterm, RoleString(rf.role), rf.log[iter].Command, iter)
-			rf.commitchan <- ApplyMsg{true, rf.log[iter].Command, iter}
+				logid, rf.me, rf.currentterm, RoleString(rf.role), rf.log[iter].Command, tryindex)
+			rf.commitchan <- ApplyMsg{true, rf.log[iter].Command, tryindex}
 		}
 		DPrintf("[%v] %v: {term - %v role - %v} after copy logs - %+v\n",
 			logid, rf.me, rf.currentterm, RoleString(rf.role), rf.log)
@@ -644,10 +633,8 @@ func (rf *Raft) DoAppendEntries() {
 						这个地方不知道会不会有问题，debug时再看看。
 					*/
 					startindex := rf.nextindex[nodeindex]
-					DPrintf("startindex - %v", startindex)
 					entries = append(entries, rf.log[startindex + 1:]...)
 					endindex := startindex + len(entries)
-					DPrintf("endindex - %v", endindex)
 					args.PrevLogIndex = startindex
 					args.PrevLogTerm = rf.log[startindex].Term
 					//args.PrevLogIndex, args.PrevLogTerm = rf.ResetLogIndexAndTerm(args.PrevLogIndex)
@@ -676,30 +663,32 @@ func (rf *Raft) DoAppendEntries() {
 							*/
 							rf.nextindex[nodeindex] = endindex
 							rf.matchindex[nodeindex] = endindex
-							for iter := rf.commitindex; iter < len(rf.log); iter++ {
+							tryindex := -1
+							for iter := rf.commitindex; iter < len(rf.log) - 1; iter++ {
 								/*
 									更新commitindex，一个个来更新。
 									由于matchindex增加了，commitindex可能可以增加了
+									每次去尝试能不能提交iter + 1
 								*/
+								tryindex = iter + 1
 								count := 1 // 超过iter的个数，超过半数即可增加commitindex
 								DPrintf("[%v] %v : matchindex - %+v", logid, rf.me, rf.matchindex)
 								for j := 0; j < len(rf.peers); j++ {
 									if j != rf.me {
-										if rf.matchindex[j] > iter {
+										if rf.matchindex[j] >= tryindex {
 											count += 1
 										}
 									}
 								}
 								// 按照图2的说法，还有一个条件是log[iter].Term == rf.currentterm，这个是什么意思?
 								if count*2 > len(rf.peers) {
-									DPrintf("[%v] %v : increase commit index from %v to %v",
-										logid, rf.me, rf.commitindex, rf.commitindex+1)
 									DPrintf("[%v] %v: {term - %v role - %v} commit command %v at index %v\n",
-										logid, rf.me, rf.currentterm, RoleString(rf.role), rf.log[rf.commitindex].Command, rf.commitindex)
-									rf.commitchan <- ApplyMsg{true, rf.log[rf.commitindex].Command, rf.commitindex}
-									rf.commitindex += 1
+										logid, rf.me, rf.currentterm, RoleString(rf.role), rf.log[rf.commitindex].Command, tryindex)
+									rf.commitchan <- ApplyMsg{true, rf.log[rf.commitindex].Command, tryindex}
+									rf.commitindex = tryindex
 								} else {
-									// 当前这个iter的值都过不了，不再判断下一个iter
+									// 当前try的值都过不了，不再判断下一个
+									rf.commitindex = tryindex - 1
 									break
 								}
 							}
@@ -809,14 +798,14 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	// 初始情况下，Log应该怎么初始化？因为
 	rf.log = make([]Log, 0)
 	/*
-		不能使用这个place holder，会导致lab2b出问题。- 不对，实际上是因为没发送消息到applyCh
-		rf.log = append(rf.log, Log{0, "placeholder"})，使用一个placeholder能较大的简化代码。
-		//这里有一个问题，就是空log怎么表示？
+		这里有一个问题，就是空log怎么表示？
 		1.现在的设计方法是认为空日志是 index=0,term=0，有一个日志的情况是index=0,term!=0
-		2.设置placeholder，能行吗？
+		2.设置placeholder，- 可以，但是
+			2.1 对很多index要做与图2有区别的赋值。
+			2.2 能简化上面的index=0的两种情况的判断问题。
 	*/
 	rf.log = append(rf.log, Log{0, -1})
-	rf.commitindex = 0
+	rf.commitindex = -1
 	rf.lastapplied = 0
 	// nextindex, matchindex变为leader再使用
 	rf.role = FOLLOWER

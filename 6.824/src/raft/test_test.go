@@ -97,30 +97,35 @@ func TestReElection2A(t *testing.T) {
 	这个场景是5个node提交一个log的场景。模拟client向集群提交一个command，只有leader接受command
 	1.初始没选举出leader，所有都是follower，拒绝接受command。
 	2.选举户一个leader以后，接受command，并且最后成功提交command。
+	3.连续成功提交3个command。
  */
-func TestBasicAgree2B(t *testing.T) {
-	servers := 5
-	cfg := make_config(t, servers, false)
-	defer cfg.cleanup()
+//func TestBasicAgree2B(t *testing.T) {
+//	servers := 5
+//	cfg := make_config(t, servers, false)
+//	defer cfg.cleanup()
+//
+//	cfg.begin("Test (2B): basic agreement")
+//
+//	iters := 3
+//	for index := 1; index < iters+1; index++ {
+//		nd, _ := cfg.nCommitted(index)
+//		if nd > 0 {
+//			t.Fatalf("some have committed before Start()")
+//		}
+//
+//		xindex := cfg.one(index*100, servers, false)
+//		if xindex != index {
+//			t.Fatalf("got index %v but expected %v", xindex, index)
+//		}
+//	}
+//
+//	cfg.end()
+//}
 
-	cfg.begin("Test (2B): basic agreement")
-
-	iters := 3
-	for index := 1; index < iters+1; index++ {
-		nd, _ := cfg.nCommitted(index)
-		if nd > 0 {
-			t.Fatalf("some have committed before Start()")
-		}
-
-		xindex := cfg.one(index*100, servers, false)
-		if xindex != index {
-			t.Fatalf("got index %v but expected %v", xindex, index)
-		}
-	}
-
-	cfg.end()
-}
-
+/*
+	3个node挂了1个，还能继续commit日志。
+	挂掉的node回来后，日志能跟上已经提交的日志。
+ */
 //func TestFailAgree2B(t *testing.T) {
 //	servers := 3
 //	cfg := make_config(t, servers, false)
@@ -152,6 +157,12 @@ func TestBasicAgree2B(t *testing.T) {
 //	cfg.end()
 //}
 
+/*
+	5个node，选为1个leader以后提交一次日志。
+	断开其中的3个node，断开的3个node由于收不到心跳在不断的发起投票，但是无法成为新的leader。
+	老的leader收到一个新command，但是投票不过半，所以提交不了。
+	恢复网络以后，断开的3个node之一成为新leader，把老leader的command(20)清除掉。
+ */
 //func TestFailNoAgree2B(t *testing.T) {
 //	servers := 5
 //	cfg := make_config(t, servers, false)
@@ -160,9 +171,6 @@ func TestBasicAgree2B(t *testing.T) {
 //	cfg.begin("Test (2B): no agreement if too many followers disconnect")
 //
 //	cfg.one(10, servers, false)
-//	// 提交command=10的日志
-//
-//
 //	// 3 of 5 followers disconnect
 //	leader := cfg.checkOneLeader()
 //	DPrintf("disconnect %v %v %v", (leader + 1) % servers, (leader + 2) % servers, (leader + 3) % servers)
@@ -195,20 +203,12 @@ func TestBasicAgree2B(t *testing.T) {
 //	cfg.connect((leader + 3) % servers)
 //	// 加入后重新选主
 //	/*
-//		TODO: 截断逻辑写的有问题！- 无条件截断？
-//		if mylastlogterm != args.PrevLogTerm {
-//				// 清除本node从PrevLogIndex到末尾的的日志
-//				rf.log = rf.log[0:args.PrevLogIndex]
-//		}
-//		我的老写法。
-//		图二中并没说有说follower比leader日志长怎么办，只说如果conflict怎么处理，不同的log index比较看起来没意义。
-//
+//		图2中并没说有说follower比leader日志长怎么办，只说如果conflict怎么处理，不同的log index比较看起来没意义。
 //		这个case挂掉的原因在于:
 //		0,1含有两个log entry (2, 10) (2, 20)
 //		2,3,4只有一个log entry (2, 10)
 //		在2重选为leader以后，日志变为(2, 10), (16, 30), (16, 1000)
 //		appendEntries()的处理，现在没有截断0,1的日志。(2, 20)没有commit，应该是无法comit，截断时应该删掉才对。
-//
 //	 */
 //	// the disconnected majority may have chosen a leader from
 //	// among their own ranks, forgetting index 2.
@@ -226,6 +226,9 @@ func TestBasicAgree2B(t *testing.T) {
 //	cfg.end()
 //}
 
+/*
+	这个case是在短时间内大量的发日志，然后确定这些日志都被提交了。
+ */
 //func TestConcurrentStarts2B(t *testing.T) {
 //	servers := 3
 //	cfg := make_config(t, servers, false)
@@ -326,44 +329,44 @@ func TestBasicAgree2B(t *testing.T) {
 //
 //	cfg.end()
 //}
-//
-//func TestRejoin2B(t *testing.T) {
-//	servers := 3
-//	cfg := make_config(t, servers, false)
-//	defer cfg.cleanup()
-//
-//	cfg.begin("Test (2B): rejoin of partitioned leader")
-//
-//	cfg.one(101, servers, true)
-//
-//	// leader network failure
-//	leader1 := cfg.checkOneLeader()
-//	cfg.disconnect(leader1)
-//
-//	// make old leader try to agree on some entries
-//	cfg.rafts[leader1].Start(102)
-//	cfg.rafts[leader1].Start(103)
-//	cfg.rafts[leader1].Start(104)
-//
-//	// new leader commits, also for index=2
-//	cfg.one(103, 2, true)
-//
-//	// new leader network failure
-//	leader2 := cfg.checkOneLeader()
-//	cfg.disconnect(leader2)
-//
-//	// old leader connected again
-//	cfg.connect(leader1)
-//
-//	cfg.one(104, 2, true)
-//
-//	// all together now
-//	cfg.connect(leader2)
-//
-//	cfg.one(105, servers, true)
-//
-//	cfg.end()
-//}
+
+func TestRejoin2B(t *testing.T) {
+	servers := 3
+	cfg := make_config(t, servers, false)
+	defer cfg.cleanup()
+
+	cfg.begin("Test (2B): rejoin of partitioned leader")
+
+	cfg.one(101, servers, true)
+
+	// leader network failure
+	leader1 := cfg.checkOneLeader()
+	cfg.disconnect(leader1)
+
+	// make old leader try to agree on some entries
+	cfg.rafts[leader1].Start(102)
+	cfg.rafts[leader1].Start(103)
+	cfg.rafts[leader1].Start(104)
+
+	// new leader commits, also for index=2
+	cfg.one(103, 2, true)
+
+	// new leader network failure
+	leader2 := cfg.checkOneLeader()
+	cfg.disconnect(leader2)
+
+	// old leader connected again
+	cfg.connect(leader1)
+
+	cfg.one(104, 2, true)
+
+	// all together now
+	cfg.connect(leader2)
+
+	cfg.one(105, servers, true)
+
+	cfg.end()
+}
 //
 //func TestBackup2B(t *testing.T) {
 //	servers := 5
