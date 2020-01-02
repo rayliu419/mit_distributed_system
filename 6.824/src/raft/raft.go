@@ -60,7 +60,7 @@ const (
 	LEADER
 )
 
-var programestarttime time.Time
+//var programestarttime time.Time
 
 func RoleString(roleint int) string {
 	switch roleint {
@@ -126,6 +126,8 @@ type Raft struct {
 // return currentTerm and whether this server
 // believes it is the leader.
 func (rf *Raft) GetState() (int, bool) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 	var term int
 	var isleader bool
 	// Your code here (2A).
@@ -336,10 +338,10 @@ sendRequestVote会阻塞，所以要注意使用goroutine来调用
 func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
 	logid := args.LogId
 	DPrintf("[%v] %v: sendRequestVote to %v, time - %v, args - %+v\n",
-		logid, args.CandidateIndex, server, time.Since(programestarttime), args)
+		logid, args.CandidateIndex, server, time.Now(), args)
 	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
 	DPrintf("[%v] %v : sendRequestVote receive %v reply, time - %v, args - %+v reply - %+v\n",
-		logid, rf.me, server, time.Since(programestarttime), args, reply)
+		logid, rf.me, server, time.Now(), args, reply)
 	if reply.Term > rf.currentterm {
 		rf.mu.Lock()
 		rf.currentterm = reply.Term
@@ -466,10 +468,10 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
 	logid := args.LogId
 	DPrintf("[%v] %v : sendAppendEntries(send) to %v, time - %v, args - %+v\n",
-		logid, rf.me, server, time.Since(programestarttime), args)
+		logid, rf.me, server, time.Now(), args)
 	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
 	DPrintf("[%v] %v : sendAppendEntries(receive) %v reply, time - %v, args - %+v, reply - %+v\n",
-		logid, rf.me, server, time.Since(programestarttime), args, reply)
+		logid, rf.me, server, time.Now(), args, reply)
 	if reply.Term > rf.currentterm {
 		rf.mu.Lock()
 		rf.currentterm = reply.Term
@@ -489,12 +491,13 @@ func (rf *Raft) DoVote() {
 			自己变为了leader -> rf.role = LEADER
 			其他人变成了leader -> rf.role = FOLLOWER
 		*/
+		rf.mu.Lock()
 		if rf.role != CANDIDATE {
 			// 不再发起投票
+			rf.mu.Unlock()
 			break
 		}
 		// 再发起一轮投票，前一轮如果是long delay也不作数了。
-		rf.mu.Lock()
 		var voteagree int64 = 1 // 自己先投自己一票
 		rf.votedfor = rf.me
 		rf.currentterm += 1
@@ -733,8 +736,6 @@ func (rf *Raft) killed() bool {
 //
 func Make(peers []*labrpc.ClientEnd, me int,
 	persister *Persister, applyCh chan ApplyMsg) *Raft {
-	// 调试使用
-	programestarttime = time.Now()
 	rf := &Raft{}
 	rf.peers = peers
 	rf.persister = persister
@@ -785,22 +786,25 @@ func Make(peers []*labrpc.ClientEnd, me int,
 			*/
 			//DPrintf("[%v] %v : sleep %v, at time %v, last heart beat %v\n",
 			//	logid, rf.me, rf.heartbeattimeout-time.Since(rf.lastheartbeat), time.Since(programestarttime), time.Since(rf.lastheartbeat))
-			time.Sleep(rf.heartbeattimeout - time.Since(rf.lastheartbeat))
+			rf.mu.Lock()
+			sincelastheartbeat := time.Since(rf.lastheartbeat)
+			rf.mu.Unlock()
+			time.Sleep(rf.heartbeattimeout - sincelastheartbeat)
 			rf.mu.Lock()
 			DPrintf("[%v] %v : { term - %v role - %v entries - %+v commitindex - %v} wake up at time %v\n",
-				logid, rf.me, rf.currentterm, RoleString(rf.role), rf.log, rf.commitindex, time.Since(programestarttime))
-			rf.mu.Unlock()
+				logid, rf.me, rf.currentterm, RoleString(rf.role), rf.log, rf.commitindex, time.Now())
 			// 这里要考虑sleep以后的rf.lastheartbeat被更新了。如果在整个heartbeattimeout期间发现新的心跳，说明要转为
 			// CANDIDATE，并发起投票。如果不是FOLLOWER，就不管，继续睡眠
 			if rf.role == FOLLOWER && time.Since(rf.lastheartbeat) > rf.heartbeattimeout {
-				rf.mu.Lock()
+				//rf.mu.Lock()
 				rf.role = CANDIDATE
-				rf.mu.Unlock()
+				//rf.mu.Unlock()
 				go rf.DoVote()
 			}
 			if time.Since(rf.lastheartbeat) >= rf.heartbeattimeout {
 				rf.lastheartbeat = time.Now()
 			}
+			rf.mu.Unlock()
 		}
 	}()
 
