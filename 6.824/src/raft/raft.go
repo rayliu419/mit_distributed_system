@@ -94,7 +94,11 @@ type Raft struct {
 	log         []Log // log
 
 	// 所有机器可变状态
-	commitindex int // 将被提交的日志记录的索引(初值为0且单调递增)
+	/*
+		将被提交的日志记录的索引(初值为0且单调递增)。由于commitindex没有被持久化，导致一个挂掉的leader回来以后，会重复
+		提交command到状态机，但是因为是按顺序提交的，实际也不会有问题？
+	 */
+	commitindex int
 	lastapplied int // 已经被提交到状态机的最后一个日志的索引(初值为0且单调递增)
 
 	// leader可变状态
@@ -216,6 +220,8 @@ type RequestVoteReply struct {
 
 // LogNewer这个函数，比较的是log的index/term
 func LogNewer(candidatelogindex int, candidatelogterm int, mylogindex int, mylogterm int) bool {
+	//DPrintf("candidatelogindex - %v candidatelogterm - %v mylogindex - %v mylogterm - %v",
+	//	candidatelogindex, candidatelogterm, mylogindex, mylogterm)
 	candidatenewer := false
 	if candidatelogterm > mylogterm {
 		candidatenewer = true
@@ -686,6 +692,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		rf.log = append(rf.log, Log{rf.currentterm, command})
 		//会被周期性的心跳自动解决。
 		//go rf.DoAppendEntries()
+		rf.persist()
 		DPrintf("[%v] %v : accept command {index - %v term - %v command - %v}",
 			logid, rf.me, index, rf.currentterm, command)
 		rf.mu.Unlock()
@@ -779,8 +786,10 @@ func Make(peers []*labrpc.ClientEnd, me int,
 			//DPrintf("[%v] %v : sleep %v, at time %v, last heart beat %v\n",
 			//	logid, rf.me, rf.heartbeattimeout-time.Since(rf.lastheartbeat), time.Since(programestarttime), time.Since(rf.lastheartbeat))
 			time.Sleep(rf.heartbeattimeout - time.Since(rf.lastheartbeat))
+			rf.mu.Lock()
 			DPrintf("[%v] %v : { term - %v role - %v entries - %+v commitindex - %v} wake up at time %v\n",
 				logid, rf.me, rf.currentterm, RoleString(rf.role), rf.log, rf.commitindex, time.Since(programestarttime))
+			rf.mu.Unlock()
 			// 这里要考虑sleep以后的rf.lastheartbeat被更新了。如果在整个heartbeattimeout期间发现新的心跳，说明要转为
 			// CANDIDATE，并发起投票。如果不是FOLLOWER，就不管，继续睡眠
 			if rf.role == FOLLOWER && time.Since(rf.lastheartbeat) > rf.heartbeattimeout {

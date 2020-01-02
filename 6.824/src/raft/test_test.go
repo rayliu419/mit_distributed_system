@@ -567,6 +567,12 @@ loop:
 
 	cfg.end()
 }
+/*
+	persist的核心是：
+		reply RPC之前要持久化。
+		修改log, votefor, term要持久化。这个Start()要持久化容易漏掉。
+ */
+
 
 func TestPersist12C(t *testing.T) {
 	servers := 3
@@ -668,24 +674,36 @@ func TestPersist32C(t *testing.T) {
 	cfg.begin("Test (2C): partitioned leader and one follower crash, leader restarts")
 
 	cfg.one(101, 3, true)
+	// 假设leader1 = 0, 101被node 0 提交
 
 	leader := cfg.checkOneLeader()
 	cfg.disconnect((leader + 2) % servers)
+	// node 2(follower)断开连接，由于它无法接到心跳，它会不断的提高自己的term并且发起投票
 
 	cfg.one(102, 2, true)
+	// 102 被剩下的两台node 0 和node 1 提交
 
 	cfg.crash1((leader + 0) % servers)
 	cfg.crash1((leader + 1) % servers)
+	// node 0 和 node 1挂了，但是他们的log有两条提交的命令(101)(102)
+
 	cfg.connect((leader + 2) % servers)
+	// node 2 恢复
+
 	cfg.start1((leader + 0) % servers)
 	cfg.connect((leader + 0) % servers)
+	// node 0 恢复，与node 2成为一个网络。虽然node 2的term大，但是它无法获得node 0 的投票，因为它的日志短了。
+	// node 0 经过requestVote的处理，Term赶了上来，并且开始发起它的投票并获取leader地位。
 
 	cfg.one(103, 2, true)
+	// node 0 接受了(103)的提交。
 
 	cfg.start1((leader + 1) % servers)
 	cfg.connect((leader + 1) % servers)
+	// node 1重新连接，它也获取不了leader地位，原因跟node 2前面一样。
 
 	cfg.one(104, servers, true)
+	// 最后3个node提交(104)
 
 	cfg.end()
 }

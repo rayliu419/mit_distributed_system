@@ -99,6 +99,7 @@ func (cfg *config) crash1(i int) {
 	cfg.disconnect(i)
 	cfg.net.DeleteServer(i) // disable client connections to the server.
 
+	DPrintf("config.go %v crash", i)
 	cfg.mu.Lock()
 	defer cfg.mu.Unlock()
 
@@ -235,7 +236,7 @@ func (cfg *config) cleanup() {
 
 // attach server i to the net.
 func (cfg *config) connect(i int) {
-	// fmt.Printf("connect(%d)\n", i)
+	DPrintf("config.go %v connect", i)
 
 	cfg.connected[i] = true
 
@@ -258,7 +259,7 @@ func (cfg *config) connect(i int) {
 
 // detach server i from the net.
 func (cfg *config) disconnect(i int) {
-	// fmt.Printf("disconnect(%d)\n", i)
+	DPrintf("config.go disconnect %v", i)
 
 	cfg.connected[i] = false
 
@@ -434,6 +435,7 @@ func (cfg *config) wait(index int, n int, startTerm int) interface{} {
 func (cfg *config) one(cmd int, expectedServers int, retry bool) int {
 	t0 := time.Now()
 	starts := 0
+	DPrintf("config.go submit { command - %v expectedserver - %v retry - %v", cmd, expectedServers, retry)
 	for time.Since(t0).Seconds() < 10 {
 		// try all the servers, maybe one is the leader.
 		index := -1
