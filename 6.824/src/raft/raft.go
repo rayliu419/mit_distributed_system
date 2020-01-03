@@ -584,6 +584,9 @@ func (rf *Raft) CalulateEntriesForPeers() []LockAppendEntriesArgs {
 		*/
 		startindex := rf.nextindex[nodeindex]
 		entries := make([]Log, 0)
+		// 以前在这个地方有时会index out of。我估计是因为作为老leader还在继续发appendEntries请求，但是同时作为follower又被
+		// 新leader删除了部分日志。导致在访问rf.log[startindex:]越界。但是在这个lock的实现中，由于在发送给各个node之前就锁住
+		// 了，entries在哪个时刻总是OK的，就不会出现这个问题了。
 		entries = append(entries, rf.log[startindex:]...)
 		endindex := startindex + len(entries) - 1
 		prevlogindex := startindex - 1
