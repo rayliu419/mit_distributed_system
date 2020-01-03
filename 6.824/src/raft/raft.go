@@ -336,21 +336,23 @@ sendRequestVote会阻塞，所以要注意使用goroutine来调用
 一般的情况下，每次通信都是同一个端口吗？如果是同一个端口，TCP协议应该保证了是没法乱序的吧？
 */
 func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
+	rf.mu.Lock()
 	logid := args.LogId
 	DPrintf("[%v] %v: sendRequestVote to %v, time - %v, args - %+v\n",
 		logid, args.CandidateIndex, server, time.Now(), args)
+	rf.mu.Unlock()
 	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
+	rf.mu.Lock()
 	DPrintf("[%v] %v : sendRequestVote receive %v reply, time - %v, args - %+v reply - %+v\n",
 		logid, rf.me, server, time.Now(), args, reply)
 	if reply.Term > rf.currentterm {
-		rf.mu.Lock()
 		rf.currentterm = reply.Term
 		rf.role = FOLLOWER
 		rf.votedfor = -1
 		rf.leaderid = -1
 		rf.persist()
-		rf.mu.Unlock()
 	}
+	rf.mu.Unlock()
 	return ok
 }
 
@@ -466,21 +468,23 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 }
 
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
+	rf.mu.Lock()
 	logid := args.LogId
 	DPrintf("[%v] %v : sendAppendEntries(send) to %v, time - %v, args - %+v\n",
 		logid, rf.me, server, time.Now(), args)
+	rf.mu.Unlock()
 	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
+	rf.mu.Lock()
 	DPrintf("[%v] %v : sendAppendEntries(receive) %v reply, time - %v, args - %+v, reply - %+v\n",
 		logid, rf.me, server, time.Now(), args, reply)
 	if reply.Term > rf.currentterm {
-		rf.mu.Lock()
 		rf.currentterm = reply.Term
 		rf.role = FOLLOWER
 		rf.votedfor = -1
 		rf.leaderid = -1
 		rf.persist()
-		rf.mu.Unlock()
 	}
+	rf.mu.Unlock()
 	return ok
 }
 
@@ -513,13 +517,13 @@ func (rf *Raft) DoVote() {
 			if i != rf.me {
 				go func(nodeindex int, term int, candidateindex int, lastlogindex int, lastlogterm int) {
 					args := &RequestVoteArgs{}
+					reply := &RequestVoteReply{}
 					args.Term = term
 					args.CandidateIndex = candidateindex
 					args.LastLogIndex = lastlogindex
 					args.LastLogItemTerm = lastlogterm
 					logid := rand.Int()
 					args.LogId = logid
-					reply := &RequestVoteReply{}
 					reply.LogId = logid
 					ok := rf.sendRequestVote(nodeindex, args, reply)
 					rf.mu.Lock()
@@ -568,9 +572,12 @@ func (rf *Raft) DoAppendEntries() {
 		这个实现不好的地方在于，如果日志复制失败了需要等待较长的时间，一下复制一批。- heartbeatinterval
 	*/
 	for {
+		rf.mu.Lock()
 		if rf.role != LEADER {
+			rf.mu.Unlock()
 			break
 		}
+		rf.mu.Unlock()
 		for i := 0; i < len(rf.peers); i++ {
 			// 向各个node发出RequestVote
 			if i != rf.me {
@@ -676,6 +683,8 @@ func (rf *Raft) DoAppendEntries() {
 	每次commit了一个log，要发送ApplyMsg到applyCh里。
 */
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 	index := -1
 	term := -1
 	isLeader := true
@@ -689,7 +698,6 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	} else {
 		DPrintf("%v : {term - %v role - %v} : receive command %v, accept\n",
 			rf.me, rf.currentterm, RoleString(rf.role), command)
-		rf.mu.Lock()
 		index = len(rf.log)
 		term = rf.currentterm
 		rf.log = append(rf.log, Log{rf.currentterm, command})
@@ -698,7 +706,6 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		rf.persist()
 		DPrintf("[%v] %v : accept command {index - %v term - %v command - %v}",
 			logid, rf.me, index, rf.currentterm, command)
-		rf.mu.Unlock()
 	}
 	return index, term, isLeader
 }
@@ -810,3 +817,10 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	return rf
 }
+
+/*
+	怎么样通过go test -race
+	1.对于RPC，应该使用defer rf.mu.Unlock()
+	2.对于Sleep, sendRequestVote()之类的，由于会阻塞，不应该让lock跨越整个函数体。
+	3.
+ */
