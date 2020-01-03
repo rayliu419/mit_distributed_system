@@ -512,6 +512,10 @@ func (rf *Raft) DoVote() {
 		lastlogterm := rf.log[lastlogindex].Term
 		rf.persist()
 		rf.mu.Unlock()
+		/*
+			注意上面这些参数必须传进来，因为下面的gorountine()调用的时候，对于不同的情况参数可能变化了。
+			例如args.Term = rf.currentterm，在向不同的node发送的时候，可能currentterm已经变化了。
+		 */
 		for i := 0; i < len(rf.peers); i++ {
 			// 向各个node发出RequestVote
 			if i != rf.me {
@@ -562,6 +566,40 @@ func (rf *Raft) DoVote() {
 	}
 }
 
+type LockAppendEntriesArgs struct {
+	entries []Log
+	startindex int
+	endindex int
+	prevlogindex int
+	prevlogterm int
+}
+
+func (rf *Raft) CalulateEntriesForPeers() []LockAppendEntriesArgs {
+	var lockappendentriesargs []LockAppendEntriesArgs
+	for nodeindex := 0; nodeindex < len(rf.peers); nodeindex++ {
+		/*
+			nextindex[nodeindex]被设置为len(rf.log)
+			假设中间没有新日志提交，根据go的slice操作，rf.log[startindex:]第一次不发送任何日志。
+			endindex代表假设返回true，follower的日志已经同步到了rf.log[endindex]
+		*/
+		startindex := rf.nextindex[nodeindex]
+		entries := make([]Log, 0)
+		entries = append(entries, rf.log[startindex:]...)
+		endindex := startindex + len(entries) - 1
+		prevlogindex := startindex - 1
+		prevlogterm := rf.log[prevlogindex].Term
+
+		lockappendentriesarg := LockAppendEntriesArgs{}
+		lockappendentriesarg.startindex = startindex
+		lockappendentriesarg.endindex = endindex
+		lockappendentriesarg.entries = entries
+		lockappendentriesarg.prevlogindex = prevlogindex
+		lockappendentriesarg.prevlogterm = prevlogterm
+		lockappendentriesargs = append(lockappendentriesargs, lockappendentriesarg)
+	}
+	return lockappendentriesargs
+}
+
 func (rf *Raft) DoAppendEntries() {
 	/*
 		这个是DoHeartbeat的升级版。实际上，在raft中，要把心跳和replication log结合起来。
@@ -577,33 +615,26 @@ func (rf *Raft) DoAppendEntries() {
 			rf.mu.Unlock()
 			break
 		}
+		term := rf.currentterm
+		leaderid := rf.me
+		leadercommitindex := rf.commitindex
+		lockappendentriesargs := rf.CalulateEntriesForPeers()
 		rf.mu.Unlock()
 		for i := 0; i < len(rf.peers); i++ {
 			// 向各个node发出RequestVote
 			if i != rf.me {
-				go func(nodeindex int) {
+				go func(nodeindex int, term int, leaderid int, leadercommitindex int, lockappendentriesargs []LockAppendEntriesArgs) {
 					args := &AppendEntriesArgs{}
 					reply := &AppendEntriesReply{}
-					rf.mu.Lock()
 					logid := rand.Int()
 					args.LogId = logid
-					args.Term = rf.currentterm
-					args.LeaderId = rf.me
-					args.LeaderCommitIndex = rf.commitindex
-					entries := make([]Log, 0)
- 					/*
- 						nextindex[nodeindex]被设置为len(rf.log)
- 						假设中间没有新日志提交，根据go的slice操作，rf.log[startindex:]第一次不发送任何日志。
- 						endindex代表假设返回true，follower的日志已经同步到了rf.log[endindex]
- 					 */
-					startindex := rf.nextindex[nodeindex]
-					entries = append(entries, rf.log[startindex:]...)
-					endindex := startindex + len(entries) - 1
-					args.PrevLogIndex = startindex - 1
-					args.PrevLogTerm = rf.log[args.PrevLogIndex].Term
-					args.Entries = entries
+					args.Term = term
+					args.LeaderId = leaderid
+					args.LeaderCommitIndex = leadercommitindex
+					args.PrevLogIndex = lockappendentriesargs[nodeindex].prevlogindex
+					args.PrevLogTerm = lockappendentriesargs[nodeindex].prevlogterm
+					args.Entries = lockappendentriesargs[nodeindex].entries
 					reply.LogId = logid
-					rf.mu.Unlock()
 					// 有日志发日志，没日志发心跳
 					ok := rf.sendAppendEntries(nodeindex, args, reply)
 					/*
@@ -625,8 +656,8 @@ func (rf *Raft) DoAppendEntries() {
 								这里要使用上面的endindex，因为len(rf.log)可能已经变了。
 								nextindex更新为endindex+1，因为follower已经在rf.log[endindex]一样了，下次从endindex+1发同步日志
 							*/
-							rf.nextindex[nodeindex] = endindex + 1
-							rf.matchindex[nodeindex] = endindex
+							rf.nextindex[nodeindex] = lockappendentriesargs[nodeindex].endindex + 1
+							rf.matchindex[nodeindex] = lockappendentriesargs[nodeindex].endindex
 							for iter := rf.commitindex + 1; iter < len(rf.log); iter++ {
 								/*
 									由于matchindex增加了，commitindex可能可以增加了。
@@ -655,7 +686,7 @@ func (rf *Raft) DoAppendEntries() {
 						}
 					}
 					rf.mu.Unlock()
-				}(i)
+				}(i,  term, leaderid, leadercommitindex, lockappendentriesargs)
 			}
 		}
 		time.Sleep(rf.heartbeatinteval)
@@ -822,5 +853,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	怎么样通过go test -race
 	1.对于RPC，应该使用defer rf.mu.Unlock()
 	2.对于Sleep, sendRequestVote()之类的，由于会阻塞，不应该让lock跨越整个函数体。
-	3.
- */
+	3.leader发送vote/appendEntries，要注意不能在goroutine通过rf来获取，应该在外部加锁获取，并且作为参数传入。否则会导致问题。
+	因为发送给不同的node的参数已经不是一样了，例如term已经变了。详情可见rule5:https://pdos.csail.mit.edu/6.824/labs/raft-locking.txt
+	reply也要考虑这种问题，这就是为什么check回复时，要args.Term == rf.currentterm。
+	这也是为什么要设计lockAppendEntriesArg的struct
+*/

@@ -718,6 +718,9 @@ func TestPersist32C(t *testing.T) {
 // The leader in a new term may try to finish replicating log entries that
 // haven't been committed yet.
 //
+/*
+	从这里开始不能稳定过。
+ */
 func TestFigure82C(t *testing.T) {
 	servers := 5
 	cfg := make_config(t, servers, false)
