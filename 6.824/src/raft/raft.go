@@ -371,6 +371,20 @@ type AppendEntriesReply struct {
 	Term    int  // 假设follower的term比leader还高，要回复这个term。leader会根据这个值重置自己的term。
 	Success bool // 如果follower包含索引为prevLogIndex，且任期为prevLogTerm。
 	LogId   int  // debug
+	ConflictIndex int
+	ConflictTerm int
+}
+
+
+func (rf *Raft) FindFirstIndexInTerm(index int, term int) int {
+	DPrintf("FindFirstIndexInTerm : log -%+v index - %v term - %v", rf.log, index, term)
+	i := index
+	for ; i > 0; i-- {
+		if rf.log[i - 1].Term != term {
+			return i
+		}
+	}
+	return i
 }
 
 // 处理心跳和复制日志的请求
@@ -388,7 +402,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		return
 	}
 	if args.Term > rf.currentterm {
-		DPrintf("[%v] %v : {term - %v role - %v}: - change term because recevie heart beat from %v args - %+v\n",
+		DPrintf("[%v] %v : {term - %v role - %v}: - change term because receive heart beat from %v args - %+v\n",
 			logid, rf.me, rf.currentterm, RoleString(rf.role), args.LeaderId, args)
 		rf.role = FOLLOWER
 		rf.currentterm = args.Term
@@ -397,10 +411,11 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	}
 	if rf.currentterm == args.Term && rf.leaderid != -1 && rf.leaderid != args.LeaderId {
 		DPrintf("[%v] %v: {term - %v role - %v} : receive invalid heart beat "+
-			"from %v but current term leader is determinded to %v, args - %+v\n",
+			"from %v but current term leader is determined to %v, args - %+v\n",
 			logid, rf.me, rf.currentterm, RoleString(rf.role), args.LeaderId, rf.leaderid, args)
 		reply.Success = false
 		reply.Term = rf.currentterm
+		reply.ConflictIndex = -1
 		return
 	}
 	/*
@@ -438,6 +453,11 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		DPrintf("[%v] %v: {term - %v role - %v} mylog is too short, ask leader to pass more entries\n",
 			logid, rf.me, rf.currentterm, RoleString(rf.role))
 		reply.Success = false
+		if mylastlogindex < args.PrevLogIndex {
+			reply.ConflictIndex = len(rf.log)
+		} else {
+			reply.ConflictIndex = rf.FindFirstIndexInTerm(args.PrevLogIndex, rf.log[args.PrevLogIndex].Term)
+		}
 	} else {
 		// 传来的日志足够长来纠正本地的日志了。
 		// 清除本node从PrevLogIndex到末尾的的日志
@@ -603,6 +623,16 @@ func (rf *Raft) CalulateEntriesForPeers() []LockAppendEntriesArgs {
 	return lockappendentriesargs
 }
 
+
+func (rf *Raft) DoApplyLogs(logid int, iter int) {
+	for i := rf.lastapplied + 1; i <= iter; i++ {
+		DPrintf("[%v] %v: {term - %v role - %v} commit command %v at index %v\n",
+			logid, rf.me, rf.currentterm, RoleString(rf.role), rf.log[i].Command, i)
+		rf.commitchan <- ApplyMsg{true, rf.log[i].Command, i}
+	}
+	rf.lastapplied = iter
+}
+
 func (rf *Raft) DoAppendEntries() {
 	/*
 		这个是DoHeartbeat的升级版。实际上，在raft中，要把心跳和replication log结合起来。
@@ -652,7 +682,10 @@ func (rf *Raft) DoAppendEntries() {
 								在没有改变AppendEntriesReply的参数的情况下，需要一步步回退
 								在下一次的循环中，多发一条日志给这个follower
 							*/
-							rf.nextindex[nodeindex] = rf.nextindex[nodeindex] - 1
+							// rf.nextindex[nodeindex] = rf.nextindex[nodeindex] - 1
+							if reply.ConflictIndex != -1 {
+								rf.nextindex[nodeindex] = reply.ConflictIndex // fast back
+							}
 						} else {
 							/*
 								成功的复制了很多日志，更新nextindex/matchindex。
@@ -666,6 +699,12 @@ func (rf *Raft) DoAppendEntries() {
 									由于matchindex增加了，commitindex可能可以增加了。
 									由于placeholder的存在，从位置1开始提交
 								*/
+								if rf.log[iter].Term != rf.currentterm {
+									// 按照图2的说法，还有一个条件是log[iter].Term == rf.currentterm
+									// 解决图8(c)问题，不会发生图8(c)的(term=2, index=2, cmd=2)被提交以后又被覆盖的问题。
+									continue
+								}
+								// 本term内append的日志。
 								count := 1 // 超过iter的个数，超过半数即可增加commitindex
 								DPrintf("[%v] %v : matchindex - %+v", logid, rf.me, rf.matchindex)
 								for j := 0; j < len(rf.peers); j++ {
@@ -675,14 +714,11 @@ func (rf *Raft) DoAppendEntries() {
 										}
 									}
 								}
-								// 按照图2的说法，还有一个条件是log[iter].Term == rf.currentterm，这个是什么意思?
 								if count*2 > len(rf.peers) {
 									rf.commitindex = iter
-									DPrintf("[%v] %v: {term - %v role - %v} commit command %v at index %v\n",
-										logid, rf.me, rf.currentterm, RoleString(rf.role), rf.log[iter].Command, iter)
-									rf.commitchan <- ApplyMsg{true, rf.log[iter].Command, iter}
+									rf.DoApplyLogs(logid, iter)
 								} else {
-									// 当前try的值都过不了，不再判断下一个
+									// 当前尝试的下标都不行，下面的更不行
 									break
 								}
 							}

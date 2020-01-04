@@ -342,6 +342,7 @@ func TestRejoin2B(t *testing.T) {
 	cfg.begin("Test (2B): rejoin of partitioned leader")
 
 	cfg.one(101, servers, true)
+	// (101) 被提交
 
 	// leader network failure
 	leader1 := cfg.checkOneLeader()
@@ -352,6 +353,7 @@ func TestRejoin2B(t *testing.T) {
 	cfg.rafts[leader1].Start(102)
 	cfg.rafts[leader1].Start(103)
 	cfg.rafts[leader1].Start(104)
+	// 老leader有3个日志102，103，104
 
 	// new leader commits, also for index=2
 	cfg.one(103, 2, true)
@@ -719,7 +721,21 @@ func TestPersist32C(t *testing.T) {
 // haven't been committed yet.
 //
 /*
-	从这里开始不能稳定过。
+	paper的图8的问题序列 - 对照paper来看。
+	1. 5个node。node1(term=2)的情况下是leader，写入了一个日志(term=2, index=2, cmd=2)，复制给了node2，然后crash了。
+	2. 由于没有leader了，大家重新选举。node5(term=3)当选leader，并且写入了一个日志(term=3, index=2, cmd=3)。
+	3. node5挂了，由于没有leader，大家又重新选举。node1(term=4)回来了，并且当选leader。它把日志(term=2, index=2, cmd=2)复制给了node3，
+	接到回复以后，按照超过一半的规则，(term=2, index=2, cmd=2)这条日志被commit了。同时接到了新请求，写入了新日志(term=4, index=3, cmd=4)，
+	在这条日志复制给其他node之前，它又挂了。
+	4. node5又回来了，它发起投票并当选leader。(term=5)
+	5. node5开始复制日志(term=3, index=2, cmd=3)，node1-node4的(term=2, index=2, cmd=2)都被node5的(term=3, index=2, cmd=3)
+	覆盖了，但是(term=2, index=2, cmd=2)已经被commit，实际上是不应该被覆盖的。
+	6. 图8(e)表示，如果(term=4, index=3, cmd=4)被复制到了大多数，第4步的node5获取不了leader地位，因为它的最新日志是(term=3, index=2, cmd=3)
+	，老于日志(term=4, index=3, cmd=4)
+	这个流程说明了，leader对于非任期的日志项，不能靠counting多数来commit。基于这个case，commit不再认为多半数的node存取日志则认为
+	此日志项commit，需要加上前提条件 - 对于本任期的，才能采取counting多数来提交，同时根据log match property，如果某个index被提交，则其前面
+	也别提交。对于这个case，在第3步，(term=2, index=2, cmd=2)不能被提交，因为leader是term=4，只有在第3步的(term=4, index=3, cmd=4)
+	被复制了，(term=2, index=2, cmd=2)才一起被提交了。
  */
 func TestFigure82C(t *testing.T) {
 	servers := 5
