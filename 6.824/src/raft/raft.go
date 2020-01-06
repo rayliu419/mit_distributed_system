@@ -835,11 +835,11 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.role = FOLLOWER
 	rf.lastheartbeat = time.Now()
 	// 随机化选举时间，心跳时间可以不用随机化
-	rf.heartbeattimeout = time.Duration(120) * time.Millisecond
+	rf.heartbeattimeout = time.Duration(150) * time.Millisecond
 	// heartbeatinteval必须要小于rf.heartbeattimeout，否则某些candidate会重新开始选举
-	rf.heartbeatinteval = time.Duration(100) * time.Millisecond
+	rf.heartbeatinteval = time.Duration(50) * time.Millisecond
 	randtime := rand.Intn(50)
-	rf.electiontimeout = time.Duration(randtime+150) * time.Millisecond
+	rf.electiontimeout = time.Duration(randtime + 200) * time.Millisecond
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 
@@ -897,3 +897,28 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	reply也要考虑这种问题，这就是为什么check回复时，要args.Term == rf.currentterm。
 	这也是为什么要设计lockAppendEntriesArg的struct
 */
+
+/*
+	结构问题 - 本实验采用的sleep的方式。实际上通过channel的方式应该也可以组织，可能更好。
+	周期性激发heartbeattimeout，如果收到表示要发起reqeustVote()
+	接收端
+	for {
+		select {
+			case <- heartbeatchan:
+				{
+					fmt.Println("receive heartbeat from leader")
+				}
+			case <- time.After(rf.heartbeattimeout):
+				{
+					fmt.Println("receive heartbeat time out event, start to vote")
+					...
+				}
+			case <- time.After(rf.electiontimeout):
+				{
+					fmt.Println("election time out event, start to a new vote")
+					...
+				}
+		}
+	}
+}
+ */

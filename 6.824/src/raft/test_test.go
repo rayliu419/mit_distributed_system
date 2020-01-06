@@ -822,6 +822,12 @@ func TestUnreliableAgree2C(t *testing.T) {
 	cfg.end()
 }
 
+/*
+	TestFigure8Unreliable2C 这测试用例一共运行不超过40s。前10秒在可靠网络各种插入数据。
+	中间20秒，在不可靠网络中各种插入数据。最后10s，开始的时候，恢复网络，插入一个数据，等待这个数据被提交，如果超过这10s就报错。
+	通过减少了心跳间隔时间来解决了这个问题。
+	心跳变慢：日志复制的速度变慢，有可能导致最后10s内无法复制完成。
+ */
 func TestFigure8Unreliable2C(t *testing.T) {
 	servers := 5
 	cfg := make_config(t, servers, true)
