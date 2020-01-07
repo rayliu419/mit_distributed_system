@@ -45,6 +45,7 @@ type ApplyMsg struct {
 	CommandValid bool
 	Command      interface{}
 	CommandIndex int
+	CommitTerm int
 }
 
 type Log struct {
@@ -469,7 +470,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			// 每移动一下本地的commitindex，需要发一条消息
 			DPrintf("[%v] %v: {term - %v role - %v} commit command %v at index %v\n",
 				logid, rf.me, rf.currentterm, RoleString(rf.role), rf.log[iter].Command, iter)
-			rf.commitchan <- ApplyMsg{true, rf.log[iter].Command, iter}
+			rf.commitchan <- ApplyMsg{true, rf.log[iter].Command, iter, rf.log[iter].Term}
 		}
 		DPrintf("[%v] %v: {term - %v role - %v} after copy logs - %+v\n",
 			logid, rf.me, rf.currentterm, RoleString(rf.role), rf.log)
@@ -625,10 +626,11 @@ func (rf *Raft) CalulateEntriesForPeers() []LockAppendEntriesArgs {
 
 
 func (rf *Raft) DoApplyLogs(logid int, iter int) {
+	// 为什么在本任期内提交了至少一个entry，提交以前的就是安全的了？
 	for i := rf.lastapplied + 1; i <= iter; i++ {
 		DPrintf("[%v] %v: {term - %v role - %v} commit command %v at index %v\n",
 			logid, rf.me, rf.currentterm, RoleString(rf.role), rf.log[i].Command, i)
-		rf.commitchan <- ApplyMsg{true, rf.log[i].Command, i}
+		rf.commitchan <- ApplyMsg{true, rf.log[i].Command, i, rf.log[i].Term}
 	}
 	rf.lastapplied = iter
 }
