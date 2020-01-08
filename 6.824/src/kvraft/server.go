@@ -7,9 +7,10 @@ import (
 	"raft"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
-const Debug = 0
+const Debug = 1
 
 func DPrintf(format string, a ...interface{}) (n int, err error) {
 	if Debug > 0 {
@@ -54,19 +55,20 @@ type KVServer struct {
 
 /*
 	Get()请求做了一个假的Op来提交，如果可以提交成功，则代表它的database数据是OK的。
- */
+*/
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	// Your code here.
-	op := Op{"Get", args.Key, "", args.ClientId, args.SeqId}
-	idx, term, isleader := kv.rf.Start(op)
+	op := Op{"Get", args.Key, "", args.ClientId, args.SeqId, 0}
+	index, term, isleader := kv.rf.Start(op)
+	DPrintf("KVServer[%v] Get : op - %+v index - %v term - %v isleader - %v", kv.me, op, index, term, isleader)
 	if !isleader {
 		reply.Err = ErrWrongLeader
 		return
 	}
 	op.CommitTerm = term
-	ch := kv.GetIndexChan(idx)
+	ch := kv.GetIndexChan(index)
 	select {
-	case commitop = <-ch:
+	case commitop := <- ch:
 		// 当前的leadre可以提交日志，说明可以联系半数以上的
 		if !sameOp(op, commitop) {
 			reply.Err = ErrWrongLeader
@@ -81,7 +83,7 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	// if key not exist, just return "" or return ErrNoKey
 	value, ok := kv.database[args.Key]
 	if ok {
-		reply.Value = kv.database[args.Key]
+		reply.Value = value
 	} else {
 		reply.Err = ErrNoKey
 		reply.Value = ""
@@ -90,7 +92,7 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 
 /*
 	判断最终提交和调用Start()时的参数。如果leader没变，实际上index, term和clientId/SeqId应该是一样的。
- */
+*/
 func sameOp(expectedop Op, actualop Op) bool {
 	return expectedop.CommitTerm == actualop.CommitTerm &&
 		expectedop.ClientId == actualop.ClientId &&
@@ -118,10 +120,12 @@ func (kv *KVServer) WaitForCommit(index int, op Op) bool {
 	case <-time.After(kv.timeout):
 		{
 			// 超时，怎么处理？
+			DPrintf("KVServer[%v] WaitForCommit : op %+v timeout", kv.me, op)
 			return false
 		}
-	case commitop <- kv.GetIndexChan(index):
+	case commitop := <- kv.GetIndexChan(index):
 		{
+			DPrintf("KVServer[%v] WaitForCommit : index %v commit op %+v expected op - %v", kv.me, index, commitop, op)
 			// ListenToRaftCommit 会将此index提交的op传过来
 			if sameOp(op, commitop) {
 				return true
@@ -134,15 +138,16 @@ func (kv *KVServer) WaitForCommit(index int, op Op) bool {
 
 func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	// Your code here.
-	op := Op{args.Op, args.Key, args.Value, args.ClientId, args.SeqId}
+	op := Op{args.Op, args.Key, args.Value, args.ClientId, args.SeqId, 0}
 	index, term, isleader := kv.rf.Start(op)
+	DPrintf("KVServer[%v] PutAppend : op - %+v index - %v term - %v isleader - %v", kv.me, op, index, term, isleader)
 	if !isleader {
 		reply.Err = ErrWrongLeader
 		return
 	}
 	op.CommitTerm = term
 	commitok := kv.WaitForCommit(index, op)
-	if !commintok {
+	if !commitok {
 		/*
 			超时
 			在期望的indx提交的是另外一个请求
@@ -157,9 +162,10 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	不断监听Raft的提交请求，然后根据commitindex分发到不同的chan
 */
 func (kv *KVServer) ListenToRaftCommit() {
+	DPrintf("KVServer[%v] ListenToRaftCommit: start to listen raft commit message", kv.me)
 	for {
 		select {
-		case msg <- kv.applyCh:
+		case msg := <- kv.applyCh:
 			{
 				// 监听raft的消息，并且分发请求给index2chanop
 				op := msg.Command.(Op)
@@ -235,6 +241,9 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 
 	// You may need initialization code here.
+	kv.clientid2maxseqid = make(map[int64]int64)
+	kv.database = make(map[string]string)
+	kv.index2chanop = make(map[int]chan Op)
 	kv.timeout = time.Duration(200) * time.Millisecond
 	go kv.ListenToRaftCommit()
 	return kv

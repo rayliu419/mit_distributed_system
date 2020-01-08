@@ -1,8 +1,11 @@
 package kvraft
 
-import "labrpc"
+import (
+	"labrpc"
+)
 import "crypto/rand"
 import "math/big"
+import "sync/atomic"
 
 
 type Clerk struct {
@@ -54,8 +57,9 @@ func (ck *Clerk) Get(key string) string {
 	for {
 		if leaderindex == -1 {
 			// 如果没有记录leader
-			leaderindex = rand.Int() % len(ck.servers)
+			leaderindex = int(nrand()) % len(ck.servers)
 		}
+		DPrintf("Clerk Get : args - %+v reply - %+v leaderindex - %v", getargs, getreply, leaderindex)
 		ok := ck.servers[leaderindex].Call("KVServer.Get", getargs, getreply)
 		if ok {
 			if getreply.Err == ErrWrongLeader {
@@ -102,8 +106,9 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 	for {
 		if leaderindex == -1 {
 			// 如果没有记录leader
-			leaderindex = rand.Int() % len(ck.servers)
+			leaderindex = int(nrand()) % len(ck.servers)
 		}
+		DPrintf("Clerk PutAppend : args - %+v reply - %+v leaderindex - %v", putappendargs, putappendreply, leaderindex)
 		ok := ck.servers[leaderindex].Call("KVServer.PutAppend", putappendargs, putappendreply)
 		if ok {
 			if putappendreply.Err == ErrWrongLeader {
