@@ -58,36 +58,63 @@ type KVServer struct {
 */
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	// Your code here.
+	/*
+		kv.mu.Lock()
+		四路死锁，以下是死锁的场景：
+		1.Get请求发起rf.Start() - 此时拿着kv的mu。
+		2.rf.start()等待rf的mu。
+		3.rf正在调用DoApplyLogs()
+			rf.commitchan <- ApplyMsg{true, rf.log[i].Command, i, rf.log[i].Term}
+		4.上述的commit会导致只有commitchan读取，多条才能继续插入，然而kv的ListenToRaftCommit()函数在取完一条commit信息以后
+			case msg := <- kv.applyCh:
+			{
+				kv.mu.Lock()
+				...
+			}
+		由于往下处理需要获取kv的mu，所以锁住了。
+		所以这就是个死锁的情况。在TestBasic3A()有时就会发生。
+		这个四路死锁的问题在于：如果要在raft之上做运用，就要特别仔细。
+	 */
+	//
 	op := Op{"Get", args.Key, "", args.ClientId, args.SeqId, 0}
 	index, term, isleader := kv.rf.Start(op)
-	DPrintf("KVServer[%v] Get : op - %+v index - %v term - %v isleader - %v", kv.me, op, index, term, isleader)
+	if isleader {
+		DPrintf("KVServer[%v] Get : op - %+v index - %v term - %v isleader - %v", kv.me, op, index, term, isleader)
+	}
 	if !isleader {
 		reply.Err = ErrWrongLeader
 		return
 	}
 	op.CommitTerm = term
+	kv.mu.Lock()
 	ch := kv.GetIndexChan(index)
+	kv.mu.Unlock()
 	select {
 	case commitop := <- ch:
 		// 当前的leadre可以提交日志，说明可以联系半数以上的
 		if !sameOp(op, commitop) {
+			DPrintf("KVServer[%v] Get : different op, expected - %+v commitop - %+v", kv.me, op, commitop)
 			reply.Err = ErrWrongLeader
 			return
 		}
 	case <-time.After(kv.timeout):
 		// 超时了，相当于失败
+		DPrintf("KVServer[%v] Get : timeout, op - %+v",  op)
 		reply.Err = ErrWrongLeader
 		return
 	}
 
 	// if key not exist, just return "" or return ErrNoKey
+	kv.mu.Lock()
 	value, ok := kv.database[args.Key]
 	if ok {
+		reply.Err = OK
 		reply.Value = value
 	} else {
 		reply.Err = ErrNoKey
 		reply.Value = ""
 	}
+	kv.mu.Unlock()
 }
 
 /*
@@ -105,8 +132,6 @@ func sameOp(expectedop Op, actualop Op) bool {
 	所以WaitForCommint()和ListenToRaftCommit()都调用此函数创建chan。
 */
 func (kv *KVServer) GetIndexChan(idx int) chan Op {
-	kv.mu.Lock()
-	defer kv.mu.Unlock()
 	ch, ok := kv.index2chanop[idx]
 	if !ok {
 		ch = make(chan Op, 1) // never block this
@@ -116,6 +141,9 @@ func (kv *KVServer) GetIndexChan(idx int) chan Op {
 }
 
 func (kv *KVServer) WaitForCommit(index int, op Op) bool {
+	kv.mu.Lock()
+	ch := kv.GetIndexChan(index)
+	kv.mu.Unlock()
 	select {
 	case <-time.After(kv.timeout):
 		{
@@ -123,13 +151,15 @@ func (kv *KVServer) WaitForCommit(index int, op Op) bool {
 			DPrintf("KVServer[%v] WaitForCommit : op %+v timeout", kv.me, op)
 			return false
 		}
-	case commitop := <- kv.GetIndexChan(index):
+	case commitop := <- ch:
 		{
-			DPrintf("KVServer[%v] WaitForCommit : index %v commit op %+v expected op - %v", kv.me, index, commitop, op)
+			DPrintf("KVServer[%v] WaitForCommit : index %v commit op %+v expected op - %+v", kv.me, index, commitop, op)
 			// ListenToRaftCommit 会将此index提交的op传过来
 			if sameOp(op, commitop) {
+				DPrintf("KVServer[%v] WaitForCommit : same op")
 				return true
 			} else {
+				DPrintf("KVServer[%v] WaitForCommit : different op, commitop - %+v expectedop - %+v", kv.me, commitop, op)
 				return false
 			}
 		}
@@ -140,7 +170,9 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	// Your code here.
 	op := Op{args.Op, args.Key, args.Value, args.ClientId, args.SeqId, 0}
 	index, term, isleader := kv.rf.Start(op)
-	DPrintf("KVServer[%v] PutAppend : op - %+v index - %v term - %v isleader - %v", kv.me, op, index, term, isleader)
+	if isleader {
+		DPrintf("KVServer[%v] PutAppend : op - %+v index - %v term - %v isleader - %v", kv.me, op, index, term, isleader)
+	}
 	if !isleader {
 		reply.Err = ErrWrongLeader
 		return
@@ -167,8 +199,10 @@ func (kv *KVServer) ListenToRaftCommit() {
 		select {
 		case msg := <- kv.applyCh:
 			{
+				kv.mu.Lock()
 				// 监听raft的消息，并且分发请求给index2chanop
 				op := msg.Command.(Op)
+				op.CommitTerm = msg.CommitTerm
 				/*
 					初始的时候，我打算把这个检查放在PutAppend()里，但是这是错误的。因为:
 					1.在commit的时候才能设置clientid2maxseqid。
@@ -186,6 +220,7 @@ func (kv *KVServer) ListenToRaftCommit() {
 					}
 				}
 				kv.GetIndexChan(msg.CommandIndex) <- op
+				kv.mu.Unlock()
 			}
 		}
 	}

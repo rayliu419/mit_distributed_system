@@ -45,9 +45,7 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 // must match the declared types of the RPC handler function's
 // arguments. and reply must be passed as a pointer.
 //
-/*
-	Get请求具体应该怎么处理才能达到强一致性？
- */
+
 func (ck *Clerk) Get(key string) string {
 	// You will have to modify this function.
 	getargs := &GetArgs{}
@@ -59,8 +57,10 @@ func (ck *Clerk) Get(key string) string {
 			// 如果没有记录leader
 			leaderindex = int(nrand()) % len(ck.servers)
 		}
-		DPrintf("Clerk Get : args - %+v reply - %+v leaderindex - %v", getargs, getreply, leaderindex)
 		ok := ck.servers[leaderindex].Call("KVServer.Get", getargs, getreply)
+		if getreply.Err != ErrWrongLeader {
+			DPrintf("Clerk Get : args - %+v reply - %+v leaderindex - %v", getargs, getreply, leaderindex)
+		}
 		if ok {
 			if getreply.Err == ErrWrongLeader {
 				// 请求失败，需要请求其他的server
@@ -108,8 +108,10 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 			// 如果没有记录leader
 			leaderindex = int(nrand()) % len(ck.servers)
 		}
-		DPrintf("Clerk PutAppend : args - %+v reply - %+v leaderindex - %v", putappendargs, putappendreply, leaderindex)
 		ok := ck.servers[leaderindex].Call("KVServer.PutAppend", putappendargs, putappendreply)
+		if putappendreply.Err != ErrWrongLeader {
+			DPrintf("Clerk PutAppend : args - %+v reply - %+v leaderindex - %v", putappendargs, putappendreply, leaderindex)
+		}
 		if ok {
 			if putappendreply.Err == ErrWrongLeader {
 				// 请求失败，需要请求其他的server
@@ -120,7 +122,8 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 				ck.leader = leaderindex
 				return
 			} else {
-				// ErrNoKey - 暂时没想到怎么处理
+				// ErrNoKey - 不应该到这吧?
+				continue
 			}
 		} else {
 			// 请求失败，需要请求其他的server
@@ -135,3 +138,10 @@ func (ck *Clerk) Put(key string, value string) {
 func (ck *Clerk) Append(key string, value string) {
 	ck.PutAppend(key, value, "Append")
 }
+
+/*
+	客户端的Put/Get都是等待执行完毕才返回并执行下一个的 - 从test_test.go来看。
+	考虑到实际应用中，并发的访问应该不会等待另外的Put/Get回复。
+	如果不等待的话，那server端的clientid2maxseqid的作用是不是有问题？因为多个并发访问，可能后面一个成功了，前面那个失败了啊？
+	按照当前的逻辑，如果前面那个失败了，则它应该不可能在apply到kv.database了吧？
+ */

@@ -193,6 +193,14 @@ func GenericTest(t *testing.T, part string, nclients int, unreliable bool, crash
 		atomic.StoreInt32(&done_clients, 0)
 		atomic.StoreInt32(&done_partitioner, 0)
 		go spawn_clients_and_wait(t, cfg, nclients, func(cli int, myck *Clerk, t *testing.T) {
+			/*
+				这里的测试逻辑是：
+				在睡眠期间内，不同的client不停的先Put一次空串，然后以相等的概率或者Append，或者Get。
+				其中Append的格式都是 x clientid j(每次增1) y，如下：
+					x 0 0 y, x 0 1 y, x 0 2 y
+					x 1 0 y, x 1 1 y, x 1 2 y
+					...
+			 */
 			j := 0
 			defer func() {
 				clnts[cli] <- j
@@ -258,12 +266,17 @@ func GenericTest(t *testing.T, part string, nclients int, unreliable bool, crash
 		// log.Printf("wait for clients\n")
 		for i := 0; i < nclients; i++ {
 			// log.Printf("read from clients %d\n", i)
+			// 后去client[i]插入的j的最大值。
 			j := <-clnts[i]
 			// if j < 10 {
 			// 	log.Printf("Warning: client %d managed to perform only %d put operations in 1 sec?\n", i, j)
 			// }
 			key := strconv.Itoa(i)
 			// log.Printf("Check %v for client %d\n", j, i)
+			/*
+				v放置折从kv leader拿到的value。
+				比较前面Put+Append的值和v的值是不是一致。
+			 */
 			v := Get(cfg, ck, key)
 			checkClntAppends(t, i, v, j)
 		}

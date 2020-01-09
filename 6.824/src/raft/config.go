@@ -8,6 +8,10 @@ package raft
 // test with the original before submitting.
 //
 
+/*
+	使用一个库来模拟各种故障因素，可以利于在单机上调试分布式算法。相当于日志放在了一起。
+ */
+
 import "labrpc"
 import "log"
 import "sync"
