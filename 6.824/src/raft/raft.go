@@ -708,7 +708,7 @@ func (rf *Raft) DoAppendEntries() {
 								}
 								// 本term内append的日志。
 								count := 1 // 超过iter的个数，超过半数即可增加commitindex
-								DPrintf("[%v] %v : matchindex - %+v", logid, rf.me, rf.matchindex)
+								//DPrintf("[%v] %v : matchindex - %+v", logid, rf.me, rf.matchindex)
 								for j := 0; j < len(rf.peers); j++ {
 									if j != rf.me {
 										if rf.matchindex[j] >= iter {
@@ -924,3 +924,15 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	}
 }
  */
+//
+//func (rf *Raft)GetRole() string {
+//	rf.mu.Lock()
+//	defer rf.mu.Unlock()
+//	return RoleString(rf.role)
+//}
+//
+//func (rf *Raft)GetTerm() int {
+//	rf.mu.Lock()
+//	defer rf.mu.Unlock()
+//	return rf.currentterm
+//}

@@ -79,7 +79,8 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	op := Op{"Get", args.Key, "", args.ClientId, args.SeqId, 0}
 	index, term, isleader := kv.rf.Start(op)
 	if isleader {
-		DPrintf("KVServer[%v] Get : op - %+v index - %v term - %v isleader - %v", kv.me, op, index, term, isleader)
+		DPrintf("KVServer[%v] Get : op - %+v index - %v term - %v isleader - %v",
+			kv.me, op, index, term, isleader)
 	}
 	if !isleader {
 		reply.Err = ErrWrongLeader
@@ -93,13 +94,15 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	case commitop := <- ch:
 		// 当前的leadre可以提交日志，说明可以联系半数以上的
 		if !sameOp(op, commitop) {
-			DPrintf("KVServer[%v] Get : different op, expected - %+v commitop - %+v", kv.me, op, commitop)
+			DPrintf("KVServer[%v] Get : different op, expected - %+v commitop - %+v",
+				kv.me, op, commitop)
 			reply.Err = ErrWrongLeader
 			return
 		}
 	case <-time.After(kv.timeout):
 		// 超时了，相当于失败
-		DPrintf("KVServer[%v] Get : timeout, op - %+v",  op)
+		DPrintf("KVServer[%v] Get : timeout, op - %+v",
+			kv.me, op)
 		reply.Err = ErrWrongLeader
 		return
 	}
@@ -119,11 +122,16 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 
 /*
 	判断最终提交和调用Start()时的参数。如果leader没变，实际上index, term和clientId/SeqId应该是一样的。
+	Key和Value也得判断，因为对于Get()请求时，mock的假log的ClientId/SeqId是0。
+	如果Get()也带这两个字段，应该可以不用比较Key/Value。
+	但是没有Key/Value为什么会死锁，不知道。
 */
 func sameOp(expectedop Op, actualop Op) bool {
 	return expectedop.CommitTerm == actualop.CommitTerm &&
 		expectedop.ClientId == actualop.ClientId &&
-		expectedop.SeqId == actualop.SeqId
+		expectedop.SeqId == actualop.SeqId &&
+		expectedop.Key == actualop.Key &&
+		expectedop.Value == actualop.Value
 }
 
 /*
@@ -148,18 +156,22 @@ func (kv *KVServer) WaitForCommit(index int, op Op) bool {
 	case <-time.After(kv.timeout):
 		{
 			// 超时，怎么处理？
-			DPrintf("KVServer[%v] WaitForCommit : op %+v timeout", kv.me, op)
+			DPrintf("KVServer[%v] WaitForCommit : op %+v timeout",
+				kv.me, op)
 			return false
 		}
 	case commitop := <- ch:
 		{
-			DPrintf("KVServer[%v] WaitForCommit : index %v commit op %+v expected op - %+v", kv.me, index, commitop, op)
+			DPrintf("KVServer[%v] WaitForCommit : index %v commit op %+v expected op - %+v",
+				kv.me, index, commitop, op)
 			// ListenToRaftCommit 会将此index提交的op传过来
 			if sameOp(op, commitop) {
-				DPrintf("KVServer[%v] WaitForCommit : same op")
+				DPrintf("KVServer[%v] WaitForCommit : same op, return true",
+					kv.me, )
 				return true
 			} else {
-				DPrintf("KVServer[%v] WaitForCommit : different op, commitop - %+v expectedop - %+v", kv.me, commitop, op)
+				DPrintf("KVServer[%v] WaitForCommit : different op, commitop - %+v expectedop - %+v",
+					kv.me, commitop, op)
 				return false
 			}
 		}
@@ -169,9 +181,21 @@ func (kv *KVServer) WaitForCommit(index int, op Op) bool {
 func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	// Your code here.
 	op := Op{args.Op, args.Key, args.Value, args.ClientId, args.SeqId, 0}
+	//kv.mu.Lock()
+	//maxseqid, ok := kv.clientid2maxseqid[op.ClientId]
+	//if ok && op.SeqId <= maxseqid {
+	//	reply.Err = OK
+	//}
+	//kv.mu.Unlock()
 	index, term, isleader := kv.rf.Start(op)
 	if isleader {
-		DPrintf("KVServer[%v] PutAppend : op - %+v index - %v term - %v isleader - %v", kv.me, op, index, term, isleader)
+		if op.Op == "Put" {
+			DPrintf("KVServer[%v] Put : op - %+v index - %v term - %v isleader - %v",
+				kv.me, op, index, term, isleader)
+		} else {
+			DPrintf("KVServer[%v] Append : op - %+v index - %v term - %v isleader - %v",
+				kv.me, op, index, term, isleader)
+		}
 	}
 	if !isleader {
 		reply.Err = ErrWrongLeader
@@ -194,7 +218,6 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	不断监听Raft的提交请求，然后根据commitindex分发到不同的chan
 */
 func (kv *KVServer) ListenToRaftCommit() {
-	DPrintf("KVServer[%v] ListenToRaftCommit: start to listen raft commit message", kv.me)
 	for {
 		select {
 		case msg := <- kv.applyCh:
@@ -208,14 +231,21 @@ func (kv *KVServer) ListenToRaftCommit() {
 					1.在commit的时候才能设置clientid2maxseqid。
 					2.在raft实验中，我发现重启的Raft会重复提交log entry，这个时候应该在这里处理，在应用到状态机(本例中
 					就是这个kv存储时，要丢掉这个重复提交的记录)
+					3.PutAppend可以只检查不更新不？
 				*/
 				maxseqid, ok := kv.clientid2maxseqid[op.ClientId]
 				if !ok || op.SeqId > maxseqid {
-					kv.clientid2maxseqid[op.ClientId] = maxseqid
+					DPrintf("KVServer[%v] update clientid - %v seqid from %v to %v",
+						kv.me, op.ClientId, maxseqid, op.SeqId)
+					kv.clientid2maxseqid[op.ClientId] = op.SeqId
 					op.CommitTerm = msg.CommitTerm
 					if op.Op == "Put" {
+						DPrintf("KVServer[%v] Put overwrite database key - %v from [%v] to [%v]",
+							kv.me, op.Key, kv.database[op.Key], op.Value)
 						kv.database[op.Key] = op.Value
 					} else {
+						DPrintf("KVServer[%v] Append update database key - %v from [%v] to [%v]",
+							kv.me, op.Key, kv.database[op.Key], kv.database[op.Key] + op.Value)
 						kv.database[op.Key] += op.Value
 					}
 				}

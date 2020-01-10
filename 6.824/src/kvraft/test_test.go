@@ -174,6 +174,7 @@ func GenericTest(t *testing.T, part string, nclients int, unreliable bool, crash
 	title = title + " (" + part + ")" // 3A or 3B
 
 	const nservers = 5
+	// 启动5个kvserver(raft)
 	cfg := make_config(t, nservers, unreliable, maxraftstate)
 	defer cfg.cleanup()
 
@@ -443,11 +444,22 @@ func TestBasic3A(t *testing.T) {
 	GenericTest(t, "3A", 1, false, false, false, -1)
 }
 
+/*
+	模拟5个客户端向集群发送请求。
+	应该不会出现different op的问题，因为leader在这种情况下，一旦选举，就不会再丢失leader地位。
+	5个客户端更新的key是不一样的，共享raft集群的日志
+ */
 func TestConcurrent3A(t *testing.T) {
 	// Test: many clients (3A) ...
 	GenericTest(t, "3A", 5, false, false, false, -1)
 }
 
+/*
+	unreliable的情况就是Clerk向KVServer发信息，有时候
+		ok := ck.servers[leaderindex].Call("KVServer.PutAppend", putappendargs, putappendreply)
+	会失败。
+	同时Raft node之间也会有网络故障问题，导致leader重新选举。
+ */
 func TestUnreliable3A(t *testing.T) {
 	// Test: unreliable net, many clients (3A) ...
 	GenericTest(t, "3A", 5, true, false, false, -1)
