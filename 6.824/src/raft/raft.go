@@ -121,7 +121,9 @@ type Raft struct {
 	heartbeatinteval time.Duration
 	leaderid int // 当前的leader
 
+	commitmu sync.Mutex
 	commitchan chan ApplyMsg
+	commitcond *sync.Cond
 }
 
 // return currentTerm and whether this server
@@ -466,23 +468,26 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		rf.log = rf.log[0 : args.PrevLogIndex + 1]
 		// 添加leader发来的其他的日志
 		rf.log = append(rf.log, args.Entries...)
-		for iter := rf.commitindex + 1; iter <= args.LeaderCommitIndex; iter++ {
-			// 每移动一下本地的commitindex，需要发一条消息
-			DPrintf("[%v] %v: {term - %v role - %v} commit command %v at index %v\n",
-				logid, rf.me, rf.currentterm, RoleString(rf.role), rf.log[iter].Command, iter)
-			rf.commitchan <- ApplyMsg{true, rf.log[iter].Command, iter, rf.log[iter].Term}
-		}
 		DPrintf("[%v] %v: {term - %v role - %v} after copy logs - %+v\n",
 			logid, rf.me, rf.currentterm, RoleString(rf.role), rf.log)
-		if rf.commitindex != args.LeaderCommitIndex {
+		// 更新本地的commitindex到leader的commitindex
+		if rf.commitindex < args.LeaderCommitIndex {
 			DPrintf("[%v] %v: {term - %v role - %v} update commit index from %v to %v\n",
 				logid, rf.me, rf.currentterm, RoleString(rf.role), rf.commitindex, args.LeaderCommitIndex)
+			rf.commitindex = args.LeaderCommitIndex
+			DPrintf("[%v] %v: {term - %v role - %v} notify commit logs\n",
+				logid, rf.me, rf.currentterm, RoleString(rf.role))
+			rf.commitcond.Signal()
 		} else {
 			DPrintf("[%v] %v: {term - %v role - %v} keep commit index %v\n",
 				logid, rf.me, rf.currentterm, RoleString(rf.role), rf.commitindex)
 		}
-		// 更新本地的commitindex到leader的commitindex
-		rf.commitindex = args.LeaderCommitIndex
+		//for iter := rf.commitindex + 1; iter <= args.LeaderCommitIndex; iter++ {
+		//	// 每移动一下本地的commitindex，需要发一条消息
+		//	DPrintf("[%v] %v: {term - %v role - %v} commit command %v at index %v\n",
+		//		logid, rf.me, rf.currentterm, RoleString(rf.role), rf.log[iter].Command, iter)
+		//	rf.commitchan <- ApplyMsg{true, rf.log[iter].Command, iter, rf.log[iter].Term}
+		//}
 	}
 	reply.Term = rf.currentterm
 	rf.persist()
@@ -624,15 +629,38 @@ func (rf *Raft) CalulateEntriesForPeers() []LockAppendEntriesArgs {
 	return lockappendentriesargs
 }
 
-
-func (rf *Raft) DoApplyLogs(logid int, iter int) {
-	// 为什么在本任期内提交了至少一个entry，提交以前的就是安全的了？
-	for i := rf.lastapplied + 1; i <= iter; i++ {
-		DPrintf("[%v] %v: {term - %v role - %v} commit command %v at index %v\n",
-			logid, rf.me, rf.currentterm, RoleString(rf.role), rf.log[i].Command, i)
-		rf.commitchan <- ApplyMsg{true, rf.log[i].Command, i, rf.log[i].Term}
+/*
+	1.为什么在本任期内提交了至少一个entry，提交以前的就是安全的了？
+	2.创建单独的goroutine()来提交log到状态机。这里的核心是：
+		* 在lab3 kvraft中，rf.commitchan <- ApplyMsg可能会发生阻塞。在以前没有创建单独的gorountine()时，在阻塞期间，还会持有
+		rf.mu的锁。即使fix了kv.server调用rf.Start()不加锁时，可能在某个地方也会发生四路死锁(我没有找到具体在哪)
+		* 这个函数只有在获取要提交的日志时加锁，但是在rf.commitchan <- ApplyMsg不再使用rf.mu的锁，用了另外一个锁，另外一个锁是
+		防止多次Signal的同时处理。
+ */
+func (rf *Raft) DoApplyLogs() {
+	for {
+		rf.commitmu.Lock()
+		rf.commitcond.Wait()
+		rf.mu.Lock()
+		start := rf.lastapplied + 1
+		end := rf.commitindex
+		commitlogs := rf.log[start : end + 1]
+		raftindex := rf.me
+		currentterm := rf.currentterm
+		role := RoleString(rf.role)
+		DPrintf("%v: {term - %v role - %v} start - %v end - %v commitlogs - %+v",
+			raftindex, currentterm, role, start, end, commitlogs)
+		rf.mu.Unlock()
+		for i := start; i <= end; i++ {
+			DPrintf("%v: {term - %v role - %v} commit command %v at index %v\n",
+				raftindex, currentterm, role, commitlogs[i - start].Command, i)
+			rf.commitchan <- ApplyMsg{true, commitlogs[i - start].Command, i, commitlogs[i - start].Term}
+		}
+		rf.mu.Lock()
+		rf.lastapplied = end
+		rf.mu.Unlock()
+		rf.commitmu.Unlock()
 	}
-	rf.lastapplied = iter
 }
 
 func (rf *Raft) DoAppendEntries() {
@@ -708,7 +736,7 @@ func (rf *Raft) DoAppendEntries() {
 								}
 								// 本term内append的日志。
 								count := 1 // 超过iter的个数，超过半数即可增加commitindex
-								DPrintf("[%v] %v : matchindex - %+v", logid, rf.me, rf.matchindex)
+								//DPrintf("[%v] %v : matchindex - %+v", logid, rf.me, rf.matchindex)
 								for j := 0; j < len(rf.peers); j++ {
 									if j != rf.me {
 										if rf.matchindex[j] >= iter {
@@ -718,7 +746,9 @@ func (rf *Raft) DoAppendEntries() {
 								}
 								if count*2 > len(rf.peers) {
 									rf.commitindex = iter
-									rf.DoApplyLogs(logid, iter)
+									DPrintf("[%v] %v: {term - %v role - %v} notify commit logs\n",
+										logid, rf.me, rf.currentterm, RoleString(rf.role))
+									rf.commitcond.Signal()
 								} else {
 									// 当前尝试的下标都不行，下面的更不行
 									break
@@ -755,8 +785,21 @@ func (rf *Raft) DoAppendEntries() {
 	每次commit了一个log，要发送ApplyMsg到applyCh里。
 */
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
+	/*
+		用来debug死锁确实存在于raft node中，睡眠2s，如果还没有获取到锁，就在rf.logWithOutLock()停留。
+	 */
+	//ch := make(chan struct{})
+	//go func() {
+	//	select {
+	//	case <-time.After(time.Second * 2):
+	//		rf.logWithOutLock()
+	//	case <-ch:
+	//		return
+	//	}
+	//}()
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+	//ch <- struct{}{}
 	index := -1
 	term := -1
 	isLeader := true
@@ -854,6 +897,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	   3.作为leader，持续定时发送心跳，维持自己的地位。
 	*/
 	logid := rand.Int()
+	rf.commitcond = sync.NewCond(&rf.commitmu)
+	go rf.DoApplyLogs()
 	go func() {
 		for {
 			/*
@@ -924,3 +969,19 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	}
 }
  */
+//
+//func (rf *Raft)GetRole() string {
+//	rf.mu.Lock()
+//	defer rf.mu.Unlock()
+//	return RoleString(rf.role)
+//}
+//
+//func (rf *Raft)GetTerm() int {
+//	rf.mu.Lock()
+//	defer rf.mu.Unlock()
+//	return rf.currentterm
+//}
+
+func (rf *Raft) logWithOutLock() {
+	DPrintf("rf[%v] deadlock", rf.me)
+}

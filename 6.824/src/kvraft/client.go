@@ -7,13 +7,12 @@ import "crypto/rand"
 import "math/big"
 import "sync/atomic"
 
-
 type Clerk struct {
 	servers []*labrpc.ClientEnd
 	// You will have to modify this struct.
-	leader int
+	leader   int64
 	clientid int64
-	seqid int64
+	seqid    int64
 }
 
 func nrand() int64 {
@@ -51,34 +50,26 @@ func (ck *Clerk) Get(key string) string {
 	getargs := &GetArgs{}
 	getreply := &GetReply{}
 	getargs.Key = key
-	leaderindex := ck.leader
+	leaderindex := atomic.LoadInt64(&ck.leader)
 	for {
 		if leaderindex == -1 {
 			// 如果没有记录leader
-			leaderindex = int(nrand()) % len(ck.servers)
+			leaderindex = nrand() % int64(len(ck.servers))
 		}
 		ok := ck.servers[leaderindex].Call("KVServer.Get", getargs, getreply)
-		if getreply.Err != ErrWrongLeader {
-			DPrintf("Clerk Get : args - %+v reply - %+v leaderindex - %v", getargs, getreply, leaderindex)
-		}
-		if ok {
-			if getreply.Err == ErrWrongLeader {
-				// 请求失败，需要请求其他的server
-				leaderindex = (leaderindex + 1) % len(ck.servers)
-			} else if getreply.Err == OK {
-				// 可能还没有设定clerk的leader，设定它
-				ck.leader = leaderindex
-				return getreply.Value
-			} else {
-				// ErrNoKey - 返回空串
-				return ""
-			}
-		} else {
+		if !ok || getreply.Err == ErrWrongLeader {
 			// 请求失败，需要请求其他的server
-			leaderindex = (leaderindex + 1) % len(ck.servers)
+			DPrintf("Clerk[%v] Get Fail, change leader : args - %+v reply - %+v leaderindex - %v ok - %v",
+				key, getargs, getreply, leaderindex, ok)
+			leaderindex = (leaderindex + 1) % int64(len(ck.servers))
+			continue
 		}
+		// 可能还没有设定clerk的leader，设定它
+		DPrintf("Clerk[%v] Get OK : args - %+v reply - %+v leaderindex - %v ok - %v",
+			key, getargs, getreply, leaderindex, ok)
+		atomic.StoreInt64(&ck.leader, leaderindex)
+		return getreply.Value
 	}
-	return ""
 }
 
 //
@@ -102,33 +93,24 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 	putappendargs.SeqId = ck.seqid
 	// 下一个次的PutAppend用新的SeqId
 	atomic.AddInt64(&ck.seqid, 1)
-	leaderindex := ck.leader
+	leaderindex := atomic.LoadInt64(&ck.leader)
 	for {
 		if leaderindex == -1 {
 			// 如果没有记录leader
-			leaderindex = int(nrand()) % len(ck.servers)
+			leaderindex = nrand() % int64(len(ck.servers))
 		}
 		ok := ck.servers[leaderindex].Call("KVServer.PutAppend", putappendargs, putappendreply)
-		if putappendreply.Err != ErrWrongLeader {
-			DPrintf("Clerk PutAppend : args - %+v reply - %+v leaderindex - %v", putappendargs, putappendreply, leaderindex)
+		if !ok || putappendreply.Err == ErrWrongLeader {
+			leaderindex = (leaderindex + 1) % int64(len(ck.servers))
+			DPrintf("Clerk[%v] PutAppend Fail, change leader : args - %+v reply - %+v leaderindex - %v ok - %v",
+				key, putappendargs, putappendreply, leaderindex, ok)
+			continue
 		}
-		if ok {
-			if putappendreply.Err == ErrWrongLeader {
-				// 请求失败，需要请求其他的server
-				leaderindex = (leaderindex + 1) % len(ck.servers)
-				continue
-			} else if putappendreply.Err == OK {
-				// 可能还没有设定clerk的leader，设定它
-				ck.leader = leaderindex
-				return
-			} else {
-				// ErrNoKey - 不应该到这吧?
-				continue
-			}
-		} else {
-			// 请求失败，需要请求其他的server
-			leaderindex = (leaderindex + 1) % len(ck.servers)
-		}
+		// 可能还没有设定clerk的leader，设定它
+		DPrintf("Clerk[%v] PutAppend OK : args - %+v reply - %+v leaderindex - %v ok - %v",
+			key, putappendargs, putappendreply, leaderindex, ok)
+		atomic.StoreInt64(&ck.leader, leaderindex)
+		return
 	}
 }
 
@@ -144,4 +126,4 @@ func (ck *Clerk) Append(key string, value string) {
 	考虑到实际应用中，并发的访问应该不会等待另外的Put/Get回复。
 	如果不等待的话，那server端的clientid2maxseqid的作用是不是有问题？因为多个并发访问，可能后面一个成功了，前面那个失败了啊？
 	按照当前的逻辑，如果前面那个失败了，则它应该不可能在apply到kv.database了吧？
- */
+*/
