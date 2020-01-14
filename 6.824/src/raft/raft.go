@@ -969,19 +969,9 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	}
 }
  */
-//
-//func (rf *Raft)GetRole() string {
-//	rf.mu.Lock()
-//	defer rf.mu.Unlock()
-//	return RoleString(rf.role)
-//}
-//
-//func (rf *Raft)GetTerm() int {
-//	rf.mu.Lock()
-//	defer rf.mu.Unlock()
-//	return rf.currentterm
-//}
+
 
 func (rf *Raft) logWithOutLock() {
 	DPrintf("rf[%v] deadlock", rf.me)
 }
+

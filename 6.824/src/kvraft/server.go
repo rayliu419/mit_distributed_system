@@ -100,12 +100,6 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 		reply.Err = ErrWrongLeader
 		return
 	}
-	if !sameOp(op, commitop) {
-		DPrintf("KVServer[%v] Get : different op, expected - %+v commitop - %+v",
-			kv.me, op, commitop)
-		reply.Err = ErrWrongLeader
-		return
-	}
 	// if key not exist, just return "" or return ErrNoKey
 	kv.mu.Lock()
 	value, ok := kv.database[args.Key]
