@@ -636,6 +636,9 @@ func (rf *Raft) CalulateEntriesForPeers() []LockAppendEntriesArgs {
 		rf.mu的锁。即使fix了kv.server调用rf.Start()不加锁时，可能在某个地方也会发生四路死锁(我没有找到具体在哪)
 		* 这个函数只有在获取要提交的日志时加锁，但是在rf.commitchan <- ApplyMsg不再使用rf.mu的锁，用了另外一个锁，另外一个锁是
 		防止多次Signal的同时处理。
+	3.可能依然有问题。假设Wait()以后处理了一个Signal，但是还没处理完又来了一个Signal，可能会丢失部分日志没有继续提交。
+		* 可以设置一个定时任务，检查lastapplied和commitindex，发出Signal。
+		* 设置一个Signal的个数，检查可能miss的Signal。
  */
 func (rf *Raft) DoApplyLogs() {
 	for {

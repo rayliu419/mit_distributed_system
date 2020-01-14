@@ -100,6 +100,12 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 		reply.Err = ErrWrongLeader
 		return
 	}
+	if !sameOp(op, commitop) {
+		DPrintf("KVServer[%v] WaitForCommit : different op, commitop - %+v expectedop - %+v",
+			kv.me, commitop, op)
+		reply.Err = ErrWrongLeader
+		return
+	}
 	// if key not exist, just return "" or return ErrNoKey
 	kv.mu.Lock()
 	value, ok := kv.database[args.Key]
@@ -189,6 +195,7 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 		DPrintf("KVServer[%v] WaitForCommit : different op, commitop - %+v expectedop - %+v",
 			kv.me, commitop, op)
 		reply.Err = ErrWrongLeader
+		return
 	}
 	reply.Err = OK
 	return
