@@ -1,6 +1,9 @@
 package kvraft
 
 import (
+	"bytes"
+	"encoding/gob"
+	"fmt"
 	"labgob"
 	"labrpc"
 	"log"
@@ -51,6 +54,9 @@ type KVServer struct {
 	index2chanop map[int]chan Op
 	// 操作超时时间
 	timeout time.Duration
+
+	// lab3B
+	persister *raft.Persister
 }
 
 /*
@@ -74,7 +80,7 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 		由于往下处理需要获取kv的mu，所以锁住了。
 		所以这就是个死锁的情况。在TestBasic3A()有时就会发生。
 		这个四路死锁的问题在于：如果要在raft之上做运用，就要特别仔细。
-	 */
+	*/
 	//
 	op := Op{"Get", args.Key, "", args.ClientId, args.SeqId, 0}
 	index, term, isleader := kv.rf.Start(op)
@@ -90,7 +96,7 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	ch := kv.GetIndexChan(index)
 	var commitop Op
 	select {
-	case commitop = <- ch:
+	case commitop = <-ch:
 		close(ch)
 		// 当前的leadre可以提交日志，说明可以联系半数以上的
 	case <-time.After(kv.timeout):
@@ -183,7 +189,7 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 			reply.Err = ErrWrongLeader
 			return
 		}
-	case commitop = <- ch:
+	case commitop = <-ch:
 		{
 			// ListenToRaftCommit 会将此index提交的op传过来
 			DPrintf("KVServer[%v] WaitForCommit : index %v commit op %+v expected op - %+v",
@@ -207,7 +213,7 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 func (kv *KVServer) ListenToRaftCommit() {
 	for {
 		select {
-		case msg := <- kv.applyCh:
+		case msg := <-kv.applyCh:
 			{
 				kv.mu.Lock()
 				// 监听raft的消息，并且分发请求给index2chanop
@@ -232,15 +238,45 @@ func (kv *KVServer) ListenToRaftCommit() {
 						kv.database[op.Key] = op.Value
 					} else {
 						DPrintf("KVServer[%v] Append update database key - %v from [%v] to [%v]",
-							kv.me, op.Key, kv.database[op.Key], kv.database[op.Key] + op.Value)
+							kv.me, op.Key, kv.database[op.Key], kv.database[op.Key]+op.Value)
 						kv.database[op.Key] += op.Value
 					}
 				}
+				kv.CheckAndGenerateSnapshot(msg.CommandIndex)
 				kv.mu.Unlock()
 				kv.GetIndexChan(msg.CommandIndex) <- op
 			}
 		}
 	}
+}
+
+func (kv *KVServer) CheckAndGenerateSnapshot(commitindex int) {
+	if kv.maxraftstate == -1 || kv.persister.RaftStateSize() > 9/10*kv.maxraftstate {
+		// 90% 阈值时就要发起GenerateSnapshot()
+		return
+	}
+	/*
+		最开始我打算把kvstate也持久化放在另外一个goroutine()，但是实际上不行。因为假设ListenToRaftCommit()连续监听到
+		两个commit，第一个commit在goroutine()里传入commitindex和kv的snapshot可能对不上了。因为可能ListenToRaftCommit()
+		又加入了一个新的commit的数据。
+		上面的情况，从结果看好像没问题，就是那个commit在恢复时，又重新写了一次。
+	 */
+	kvstate := kv.PersistKVState()
+	go kv.rf.GenerateSnapshot(kvstate, commitindex)
+}
+
+func (kv *KVServer) PersistKVState() []byte {
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+	w := new(bytes.Buffer)
+	e := gob.NewEncoder(w)
+	if err := e.Encode(kv.clientid2maxseqid); err != nil {
+		panic(fmt.Errorf("KVServer[%v] encode cid2sclientid2maxseqideq fail: %v", kv.me, err))
+	}
+	if err := e.Encode(kv.database); err != nil {
+		panic(fmt.Errorf("KVServer[%v] encode database fail: %v", kv.me, err))
+	}
+	return w.Bytes()
 }
 
 //
@@ -290,6 +326,7 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	// You may need initialization code here.
 
 	kv.applyCh = make(chan raft.ApplyMsg)
+	kv.persister = persister
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 
 	// You may need initialization code here.

@@ -978,3 +978,19 @@ func (rf *Raft) logWithOutLock() {
 	DPrintf("rf[%v] deadlock", rf.me)
 }
 
+func (rf *Raft) GenerateSnapshot(kvstate []byte, commitindex int) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	
+
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	e.Encode(rf.currentterm)
+	e.Encode(rf.votedfor)
+	e.Encode(rf.log)
+	raftstate := w.Bytes()
+	// kvstate就是snapshot。
+	rf.persister.SaveStateAndSnapshot(raftstate, kvstate)
+}
+
