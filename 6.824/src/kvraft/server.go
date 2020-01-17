@@ -261,11 +261,11 @@ func (kv *KVServer) CheckAndGenerateSnapshot(commitindex int) {
 		又加入了一个新的commit的数据。
 		上面的情况，从结果看好像没问题，就是那个commit在恢复时，又重新写了一次。
 	 */
-	kvstate := kv.PersistKVState()
+	kvstate := kv.SerializeKVState()
 	go kv.rf.GenerateSnapshot(kvstate, commitindex)
 }
 
-func (kv *KVServer) PersistKVState() []byte {
+func (kv *KVServer) SerializeKVState() []byte {
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
 	w := new(bytes.Buffer)
