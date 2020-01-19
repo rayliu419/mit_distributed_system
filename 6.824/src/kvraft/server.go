@@ -215,36 +215,45 @@ func (kv *KVServer) ListenToRaftCommit() {
 		select {
 		case msg := <-kv.applyCh:
 			{
-				kv.mu.Lock()
 				// 监听raft的消息，并且分发请求给index2chanop
-				op := msg.Command.(Op)
-				op.CommitTerm = msg.CommitTerm
-				/*
-					初始的时候，我打算把这个检查放在PutAppend()里，但是这是错误的。因为:
-					1.在commit的时候才能设置clientid2maxseqid。
-					2.在raft实验中，我发现重启的Raft会重复提交log entry，这个时候应该在这里处理，在应用到状态机(本例中
-					就是这个kv存储时，要丢掉这个重复提交的记录)
-					3.PutAppend可以只检查不更新不？
-				*/
-				maxseqid, ok := kv.clientid2maxseqid[op.ClientId]
-				if !ok || op.SeqId > maxseqid {
-					DPrintf("KVServer[%v] update clientid - %v seqid from %v to %v",
-						kv.me, op.ClientId, maxseqid, op.SeqId)
-					kv.clientid2maxseqid[op.ClientId] = op.SeqId
+				if !msg.CommandValid {
+					// snapshot请求
+					buf := msg.Command.([]byte)
+					kv.mu.Lock()
+					kv.clientid2maxseqid, kv.database = kv.DeserializeKVState(buf) // restore kvDB and cid2seq
+					kv.mu.Unlock()
+				} else {
+					// 日志请求
+					kv.mu.Lock()
+					op := msg.Command.(Op)
 					op.CommitTerm = msg.CommitTerm
-					if op.Op == "Put" {
-						DPrintf("KVServer[%v] Put overwrite database key - %v from [%v] to [%v]",
-							kv.me, op.Key, kv.database[op.Key], op.Value)
-						kv.database[op.Key] = op.Value
-					} else {
-						DPrintf("KVServer[%v] Append update database key - %v from [%v] to [%v]",
-							kv.me, op.Key, kv.database[op.Key], kv.database[op.Key]+op.Value)
-						kv.database[op.Key] += op.Value
+					/*
+						初始的时候，我打算把这个检查放在PutAppend()里，但是这是错误的。因为:
+						1.在commit的时候才能设置clientid2maxseqid。
+						2.在raft实验中，我发现重启的Raft会重复提交log entry，这个时候应该在这里处理，在应用到状态机(本例中
+						就是这个kv存储时，要丢掉这个重复提交的记录)
+						3.PutAppend可以只检查不更新不？
+					*/
+					maxseqid, ok := kv.clientid2maxseqid[op.ClientId]
+					if !ok || op.SeqId > maxseqid {
+						DPrintf("KVServer[%v] update clientid - %v seqid from %v to %v",
+							kv.me, op.ClientId, maxseqid, op.SeqId)
+						kv.clientid2maxseqid[op.ClientId] = op.SeqId
+						op.CommitTerm = msg.CommitTerm
+						if op.Op == "Put" {
+							DPrintf("KVServer[%v] Put overwrite database key - %v from [%v] to [%v]",
+								kv.me, op.Key, kv.database[op.Key], op.Value)
+							kv.database[op.Key] = op.Value
+						} else {
+							DPrintf("KVServer[%v] Append update database key - %v from [%v] to [%v]",
+								kv.me, op.Key, kv.database[op.Key], kv.database[op.Key]+op.Value)
+							kv.database[op.Key] += op.Value
+						}
 					}
+					kv.CheckAndGenerateSnapshot(msg.CommandIndex)
+					kv.mu.Unlock()
+					kv.GetIndexChan(msg.CommandIndex) <- op
 				}
-				kv.CheckAndGenerateSnapshot(msg.CommandIndex)
-				kv.mu.Unlock()
-				kv.GetIndexChan(msg.CommandIndex) <- op
 			}
 		}
 	}
@@ -263,6 +272,17 @@ func (kv *KVServer) CheckAndGenerateSnapshot(commitindex int) {
 	 */
 	kvstate := kv.SerializeKVState()
 	go kv.rf.GenerateSnapshot(kvstate, commitindex)
+}
+
+func (kv *KVServer) DeserializeKVState(kvstate []byte) (map[int64]int64, map[string]string) {
+	r := bytes.NewBuffer(kvstate)
+	d := labgob.NewDecoder(r)
+	var clientid2maxseqid map[int64]int64
+	var database map[string]string
+	if d.Decode(&clientid2maxseqid) != nil || d.Decode(&database) != nil {
+		DPrintf("decode snapshot error !")
+	}
+	return clientid2maxseqid, database
 }
 
 func (kv *KVServer) SerializeKVState() []byte {

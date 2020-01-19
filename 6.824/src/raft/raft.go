@@ -128,10 +128,12 @@ type Raft struct {
 	commitmu sync.Mutex
 	commitchan chan ApplyMsg
 	commitcond *sync.Cond
+	commitinteval time.Duration
 
 	// 快照使用的属性
 	snapshotlastindex int
 	snapshotlastterm int
+	snapshotsignalcount int32
 }
 
 // return currentTerm and whether this server
@@ -175,19 +177,6 @@ func (rf *Raft) readPersist(data []byte) {
 	if data == nil || len(data) < 1 { // bootstrap without any state?
 		return
 	}
-	// Your code here (2C).
-	// Example:
-	// r := bytes.NewBuffer(data)
-	// d := labgob.NewDecoder(r)
-	// var xxx
-	// var yyy
-	// if d.Decode(&xxx) != nil ||
-	//    d.Decode(&yyy) != nil {
-	//   error...
-	// } else {
-	//   rf.xxx = xxx
-	//   rf.yyy = yyy
-	// }
 	r := bytes.NewBuffer(data)
 	d := labgob.NewDecoder(r)
 	var currentterm int
@@ -616,6 +605,10 @@ type LockSnapshotArgs struct {
 	snapshotlastterm int
 }
 
+/*
+	为每个node计算要同步的信息。有的node是snapshot(太长时间没有同步过了)，有的node是发log。
+
+ */
 func (rf *Raft) CalculateEntriesForPeers() []LockAppendEntriesArgs {
 	var lockappendentriesargs []LockAppendEntriesArgs
 	for nodeindex := 0; nodeindex < len(rf.peers); nodeindex++ {
@@ -661,35 +654,53 @@ func (rf *Raft) DoApplyLogs() {
 		rf.commitmu.Lock()
 		rf.commitcond.Wait()
 		rf.mu.Lock()
-		start := rf.lastapplied + 1
-		end := rf.commitindex
-		commitlogs := rf.log[start : end + 1]
+		commitinteval := rf.commitinteval
 		raftindex := rf.me
 		currentterm := rf.currentterm
 		role := RoleString(rf.role)
-		DPrintf("%v: {term - %v role - %v} start - %v end - %v commitlogs - %+v",
-			raftindex, currentterm, role, start, end, commitlogs)
-		rf.mu.Unlock()
-		for i := start; i <= end; i++ {
-			DPrintf("%v: {term - %v role - %v} commit command %v at index %v\n",
-				raftindex, currentterm, role, commitlogs[i - start].Command, i)
-			rf.commitchan <- ApplyMsg{true, commitlogs[i - start].Command, i, commitlogs[i - start].Term}
+		// commit snapshot
+		if rf.snapshotsignalcount > 0 {
+			rf.snapshotsignalcount -= 1
+			snapshotdata := rf.persister.ReadSnapshot()
+			DPrintf("%v: {term - %v role - %v} commit snapshot",
+				raftindex, currentterm, role)
+			rf.mu.Unlock()
+			// snapshot CommandValid=false
+			rf.commitchan <- ApplyMsg{false, snapshotdata,
+				-1, currentterm}
+			rf.mu.Lock()
+		}
+		start := rf.lastapplied + 1
+		end := rf.commitindex
+		commitlogs := rf.log[start : end + 1]
+		// commit log
+		if len(commitlogs) != 0 {
+			DPrintf("%v: {term - %v role - %v} start - %v end - %v commitlogs - %+v",
+				raftindex, currentterm, role, start, end, commitlogs)
+			rf.mu.Unlock()
+			for i := start; i <= end; i++ {
+				DPrintf("%v: {term - %v role - %v} commit command %v at index %v\n",
+					raftindex, currentterm, role, commitlogs[i - start].Command, i)
+				rf.commitchan <- ApplyMsg{true, commitlogs[i - start].Command,
+					i, commitlogs[i - start].Term}
+			}
 		}
 		rf.mu.Lock()
 		rf.lastapplied = end
 		rf.mu.Unlock()
 		rf.commitmu.Unlock()
+		time.Sleep(commitinteval)
 	}
 }
 
 func (rf *Raft) DoAppendEntries() {
 	/*
-		这个是DoHeartbeat的升级版。实际上，在raft中，要把心跳和replication log结合起来。
+		在raft中，要把心跳和replication log结合起来。
 		考虑到这样的场景，leader一边在跟follower心跳维持地位，一边接受client的新请求。这样会出现一会发空日志，一会发append日志。
 		1.没有要replicate的log的时候，发心跳包 。
 		2.有要replicate的log的时候，发复制日志包。
-		无限循环
 		这个实现不好的地方在于，如果日志复制失败了需要等待较长的时间，一下复制一批。- heartbeatinterval
+		在加入snapshot以后，要判断是发送snapshot还是log。
 	*/
 	for {
 		rf.mu.Lock()
@@ -899,6 +910,9 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	// 由于快照的日志压缩要求，snapshotlastindex设定为-1先。
 	rf.snapshotlastindex = -1
 	rf.snapshotlastterm = 0
+	rf.snapshotsignalcount = 0
+
+	rf.commitinteval =  time.Duration(200) * time.Millisecond
 
 	rf.role = FOLLOWER
 	rf.lastheartbeat = time.Now()
@@ -1042,12 +1056,12 @@ type InstallSnapshotReply struct {
 func (rf *Raft) sendSnapshot(server int, args *InstallSnapshotArgs, reply *InstallSnapshotReply) bool {
 	rf.mu.Lock()
 	logid := args.LogId
-	DPrintf("[%v] %v : sendSnapshot(send) to %v, time - %v, args - %+v\n",
+	DPrintf("[%v] %v : sendInstallSnapshot(send) to %v, time - %v, args - %+v\n",
 		logid, rf.me, server, time.Now(), args)
 	rf.mu.Unlock()
 	ok := rf.peers[server].Call("Raft.InstallSnapshot", args, reply)
 	rf.mu.Lock()
-	DPrintf("[%v] %v : sendSnapshot(receive) %v reply, time - %v, args - %+v, reply - %+v\n",
+	DPrintf("[%v] %v : sendInstallSnapshot(receive) %v reply, time - %v, args - %+v, reply - %+v\n",
 		logid, rf.me, server, time.Now(), args, reply)
 	if reply.Term > rf.currentterm {
 		rf.currentterm = reply.Term
@@ -1089,10 +1103,11 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 		return
 	}
 	/*
-		follower应该怎么处理snapshot的请求？
-		需要调整该follower的日志
+		调整该follower的日志
 		1.如果follower本身的日志还没有snapshot的长，直接全部删掉即可。
-		2.如果follower的日志比snapshot长，比较snpapshotindex/term 和 日志中的情况，如果不符合，就把follower的日志全部截断。符合就保留
+		2.如果follower的日志比snapshot长，比较snpapshotindex/term和日志中的情况：
+			如果不符合，就把follower的日志全部截断。
+			符合就保留后续的日志。
 	 */
 	// 对于初始状态的rf.snapshotlastindex = -1和更新后为某个值的都适合。
 	currentlogmaxindex := rf.snapshotlastindex + len(rf.log)
@@ -1103,14 +1118,14 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 		mymappingterm = rf.log[mymappingindex].Term
 	}
 	if currentlogmaxindex < rf.snapshotlastindex {
-		// 如果follower本身的日志还没有snapshot的长，直接全部删掉即可。
+		// 如果follower本身的日志还没有snapshot的长，本身全部删掉。
 		rf.log = make([]Log, 0)
 		rf.log = append(rf.log, Log{rf.snapshotlastterm, -1})
 	} else {
-		// follower的日志比snapshot长，比较snpapshotindex/term和日志中的情况，如果不符合，就把follower的日志全部截断。符合就保留
+		// follower的日志比snapshot长，比较snpapshotindex/term和日志中的情况。
 		if mymappingterm == args.SnapshotLastTerm {
 			/*
-				如果follower的日志比snapshot长，比较snpapshotindex/term和日志中的情况且符合，截断已经进入snapshot的日志，保留其他多余日志。
+				snpapshotindex/term和日志中的情况符合，截断snapshot包含的日志，保留其他多余日志。
 				1.rf.snaphostindex = -1 OK
 				2.rf.snaphostindex < args.SnapshotLastIndex OK
 				3.rf.snaphostindex == args.SnapshotLastIndex OK
@@ -1120,22 +1135,22 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 				rf.log = rf.log[args.SnapshotLastIndex - rf.snapshotlastindex:]
 			}
 		} else {
+			// 日志与snapshot冲突，后面的全部清理掉。
 			rf.log = make([]Log, 0)
 			rf.log = append(rf.log, Log{rf.snapshotlastterm, -1})
 		}
 	}
+	rf.snapshotsignalcount += 1
 	rf.snapshotlastindex = args.SnapshotLastIndex
 	rf.snapshotlastterm = args.SnapshotLastTerm
 	rf.commitindex = IntMax(rf.commitindex, args.SnapshotLastIndex)
 	rf.lastapplied = IntMax(rf.lastapplied, args.SnapshotLastIndex)
-	// 需要本地再提交日志吗？- 感觉不需要
-	// rf.commitcond.Signal()
-	raftstat := rf.SerializeRaftState()
-	rf.persister.SaveStateAndSnapshot(raftstat, args.SnapshotData)
-	// TODO: 更新到状态机
+
+	raftstate := rf.SerializeRaftState()
+	rf.persister.SaveStateAndSnapshot(raftstate, args.SnapshotData)
+	// 更新到状态机
+	rf.commitcond.Signal()
 	reply.Term = rf.currentterm
-	// TODO: 修改一下
-	rf.persist()
 }
 
 func IntMax(x int, y int) int {
