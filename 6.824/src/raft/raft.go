@@ -158,13 +158,6 @@ func (rf *Raft) GetState() (int, bool) {
 // see paper's Figure 2 for a description of what should be persistent.
 //
 func (rf *Raft) persist() {
-	// Your code here (2C).
-	// Example:
-	// w := new(bytes.Buffer)
-	// e := labgob.NewEncoder(w)
-	// e.Encode(rf.xxx)
-	// e.Encode(rf.yyy)
-	// data := w.Bytes()
 	// rf.persister.SaveRaftState(data)
 	raftstate := rf.SerializeRaftState()
 	rf.persister.SaveRaftState(raftstate)
@@ -584,14 +577,12 @@ func (rf *Raft) DoVote() {
 	}
 }
 
-type AppendEntriesInfo struct {
-	lockAppendEntriesArgs LockAppendEntriesArgs
-	lockSnapshotArgs LockSnapshotArgs
-	// SNPASHOT or LOG
-	datatype string
+type LockSnapshotOrLog struct {
+	syncEntry interface{}
+	datatype string // SNPASHOT or LOG
 }
 
-type LockAppendEntriesArgs struct {
+type LockLogArgs struct {
 	entries []Log
 	startindex int
 	endindex int
@@ -607,39 +598,42 @@ type LockSnapshotArgs struct {
 
 /*
 	为每个node计算要同步的信息。有的node是snapshot(太长时间没有同步过了)，有的node是发log。
-
+    以前在这个地方有时会index out of。我估计是因为作为老leader还在继续发appendEntries请求，但是同时作为follower又被
+	新leader删除了部分日志。导致在访问rf.log[startindex:]越界。但是在这个lock的实现中，由于在发送给各个node之前就锁住
+	了，entries在那个时刻总是OK的，就不会出现这个问题了。
  */
-func (rf *Raft) CalculateEntriesForPeers() []LockAppendEntriesArgs {
-	var lockappendentriesargs []LockAppendEntriesArgs
+func (rf *Raft) CalculateRPCArgsForPeers() []LockSnapshotOrLog {
+	var lockSnapshotOrLogs []LockSnapshotOrLog
 	for nodeindex := 0; nodeindex < len(rf.peers); nodeindex++ {
-		/*
-			nextindex[nodeindex]被设置为len(rf.log)
-			假设中间没有新日志提交，根据go的slice操作，rf.log[startindex:]第一次不发送任何日志。
-			endindex代表假设返回true，follower的日志已经同步到了rf.log[endindex]
-		*/
 		startindex := rf.nextindex[nodeindex]
-		entries := make([]Log, 0)
-		// 以前在这个地方有时会index out of。我估计是因为作为老leader还在继续发appendEntries请求，但是同时作为follower又被
-		// 新leader删除了部分日志。导致在访问rf.log[startindex:]越界。但是在这个lock的实现中，由于在发送给各个node之前就锁住
-		// 了，entries在哪个时刻总是OK的，就不会出现这个问题了。
-		entries = append(entries, rf.log[startindex:]...)
-		endindex := startindex + len(entries) - 1
-		prevlogindex := startindex - 1
-		prevlogterm := rf.log[prevlogindex].Term
-
-		lockappendentriesarg := LockAppendEntriesArgs{}
-		lockappendentriesarg.startindex = startindex
-		lockappendentriesarg.endindex = endindex
-		lockappendentriesarg.entries = entries
-		lockappendentriesarg.prevlogindex = prevlogindex
-		lockappendentriesarg.prevlogterm = prevlogterm
-		lockappendentriesargs = append(lockappendentriesargs, lockappendentriesarg)
+		if startindex <= rf.snapshotlastindex {
+			locksnapshotargs := LockSnapshotArgs{rf.persister.ReadSnapshot(),
+				rf.snapshotlastindex, rf.snapshotlastterm}
+			locksnapshotorlog := LockSnapshotOrLog{locksnapshotargs, SNAPSHORT}
+			lockSnapshotOrLogs = append(lockSnapshotOrLogs, locksnapshotorlog)
+		} else {
+			/*
+				nextindex[nodeindex]被设置为len(rf.log)
+				假设中间没有新日志提交，根据go的slice操作，rf.log[startindex:]第一次不发送任何日志。
+				endindex代表假设返回true，follower的日志已经同步到了rf.log[endindex]
+			*/
+			entries := make([]Log, 0)
+			entries = append(entries, rf.log[startindex:]...)
+			endindex := startindex + len(entries) - 1
+			prevlogindex := startindex - 1
+			prevlogterm := rf.log[prevlogindex].Term
+			locklogargs := LockLogArgs{entries, startindex,
+				endindex, prevlogindex, prevlogterm}
+			locksnapshotorlog := LockSnapshotOrLog{locklogargs, LOG}
+			lockSnapshotOrLogs = append(lockSnapshotOrLogs, locksnapshotorlog)
+		}
 	}
-	return lockappendentriesargs
+	return lockSnapshotOrLogs
 }
 
 /*
-	1.为什么在本任期内提交了至少一个entry，提交以前的就是安全的了？
+	1.为什么在本任期内提交了至少一个entry，提交以前的就是安全的了？- 如果成功提交了一个日志，则保证这个日志足够新，不会发生这个日志之前的
+	log被其他candidate获取到了leader覆盖写，因为有一半以上日志足够新了。
 	2.创建单独的goroutine()来提交log到状态机。这里的核心是：
 		* 在lab3 kvraft中，rf.commitchan <- ApplyMsg可能会发生阻塞。在以前没有创建单独的gorountine()时，在阻塞期间，还会持有
 		rf.mu的锁。即使fix了kv.server调用rf.Start()不加锁时，可能在某个地方也会发生四路死锁(我没有找到具体在哪)
@@ -658,7 +652,7 @@ func (rf *Raft) DoApplyLogs() {
 		raftindex := rf.me
 		currentterm := rf.currentterm
 		role := RoleString(rf.role)
-		// commit snapshot
+		// 如果有snapshot，就commit snapshot
 		if rf.snapshotsignalcount > 0 {
 			rf.snapshotsignalcount -= 1
 			snapshotdata := rf.persister.ReadSnapshot()
@@ -711,83 +705,92 @@ func (rf *Raft) DoAppendEntries() {
 		term := rf.currentterm
 		leaderid := rf.me
 		leadercommitindex := rf.commitindex
-		lockappendentriesargs := rf.CalculateEntriesForPeers()
+		locksnapshotorlogargs := rf.CalculateRPCArgsForPeers()
+		logid := rand.Int()
 		rf.mu.Unlock()
 		for i := 0; i < len(rf.peers); i++ {
-			// 向各个node发出RequestVote
 			if i != rf.me {
-				go func(nodeindex int, term int, leaderid int, leadercommitindex int, lockappendentriesargs []LockAppendEntriesArgs) {
-					args := &AppendEntriesArgs{}
-					reply := &AppendEntriesReply{}
-					logid := rand.Int()
-					args.LogId = logid
-					args.Term = term
-					args.LeaderId = leaderid
-					args.LeaderCommitIndex = leadercommitindex
-					args.PrevLogIndex = lockappendentriesargs[nodeindex].prevlogindex
-					args.PrevLogTerm = lockappendentriesargs[nodeindex].prevlogterm
-					args.Entries = lockappendentriesargs[nodeindex].entries
-					reply.LogId = logid
-					// 有日志发日志，没日志发心跳
-					ok := rf.sendAppendEntries(nodeindex, args, reply)
-					/*
-						按照图2的说法，两种情况会返回reply.Success = false。
-						1.follower的term比当前的还新。在sendAppendEntries会把当前这个leader变成follower，不会再转入下面的判断
-						2.follower的日志没有完全，需要reply.Success = false以让leader发多余的日志给follower
-					*/
-					rf.mu.Lock()
-					if ok && rf.role == LEADER && args.Term == rf.currentterm {
-						if !reply.Success {
-							/*
-								在没有改变AppendEntriesReply的参数的情况下，需要一步步回退
-								在下一次的循环中，多发一条日志给这个follower
-							*/
-							// rf.nextindex[nodeindex] = rf.nextindex[nodeindex] - 1
-							if reply.ConflictIndex != -1 {
-								rf.nextindex[nodeindex] = reply.ConflictIndex // fast back
-							}
-						} else {
-							/*
-								成功的复制了很多日志，更新nextindex/matchindex。
-								这里要使用上面的endindex，因为len(rf.log)可能已经变了。
-								nextindex更新为endindex+1，因为follower已经在rf.log[endindex]一样了，下次从endindex+1发同步日志
-							*/
-							rf.nextindex[nodeindex] = lockappendentriesargs[nodeindex].endindex + 1
-							rf.matchindex[nodeindex] = lockappendentriesargs[nodeindex].endindex
-							for iter := rf.commitindex + 1; iter < len(rf.log); iter++ {
+				go func(nodeindex int, term int, leaderid int, leadercommitindex int,
+					locksnapshotorlogargs []LockSnapshotOrLog) {
+					if locksnapshotorlogargs[nodeindex].datatype == SNAPSHORT {
+						// 发送Snapshot
+						snapshot := locksnapshotorlogargs[nodeindex].syncEntry.(LockSnapshotArgs)
+						args := &InstallSnapshotArgs{term, leaderid, snapshot.snapshotlastindex,
+							snapshot.snapshotlastterm, snapshot.snapshotdata, logid}
+						reply := &InstallSnapshotReply{}
+						reply.LogId = logid
+						ok := rf.sendSnapshot(nodeindex, args, reply)
+						rf.HandleInstallSnapshotReply(ok, args, reply, nodeindex, locksnapshotorlogargs)
+
+					} else {
+						// 有日志发日志，没日志发心跳
+						logargs := locksnapshotorlogargs[nodeindex].syncEntry.(LockLogArgs)
+						args := &AppendEntriesArgs{term, leaderid, logargs.prevlogindex,
+						logargs.prevlogterm, logargs.entries, leadercommitindex,
+						logid}
+						reply := &AppendEntriesReply{}
+						reply.LogId = logid
+						ok := rf.sendAppendEntries(nodeindex, args, reply)
+						// TODO 替换成HandleAppendEntriesReply
+						/*
+							按照图2的说法，两种情况会返回reply.Success = false。
+							1.follower的term比当前的还新。在sendAppendEntries会把当前这个leader变成follower，不会再转入下面的判断
+							2.follower的日志没有完全，需要reply.Success = false以让leader发多余的日志给follower
+						*/
+						rf.mu.Lock()
+						if ok && rf.role == LEADER && args.Term == rf.currentterm {
+							if !reply.Success {
 								/*
-									由于matchindex增加了，commitindex可能可以增加了。
-									由于placeholder的存在，从位置1开始提交
+									在没有改变AppendEntriesReply的参数的情况下，需要一步步回退
+									在下一次的循环中，多发一条日志给这个follower
 								*/
-								if rf.log[iter].Term != rf.currentterm {
-									// 按照图2的说法，还有一个条件是log[iter].Term == rf.currentterm
-									// 解决图8(c)问题，不会发生图8(c)的(term=2, index=2, cmd=2)被提交以后又被覆盖的问题。
-									continue
+								// rf.nextindex[nodeindex] = rf.nextindex[nodeindex] - 1
+								if reply.ConflictIndex != -1 {
+									rf.nextindex[nodeindex] = reply.ConflictIndex // fast back
 								}
-								// 本term内append的日志。
-								count := 1 // 超过iter的个数，超过半数即可增加commitindex
-								//DPrintf("[%v] %v : matchindex - %+v", logid, rf.me, rf.matchindex)
-								for j := 0; j < len(rf.peers); j++ {
-									if j != rf.me {
-										if rf.matchindex[j] >= iter {
-											count += 1
+							} else {
+								/*
+									成功的复制了很多日志，更新nextindex/matchindex。
+									这里要使用上面的endindex，因为len(rf.log)可能已经变了。
+									nextindex更新为endindex+1，因为follower已经在rf.log[endindex]一样了，下次从endindex+1发同步日志
+								*/
+								rf.nextindex[nodeindex] = logargs.endindex + 1
+								rf.matchindex[nodeindex] = logargs.endindex
+								for iter := rf.commitindex + 1; iter < len(rf.log); iter++ {
+									/*
+										由于matchindex增加了，commitindex可能可以增加了。
+										由于placeholder的存在，从位置1开始提交
+									*/
+									if rf.log[iter].Term != rf.currentterm {
+										// 按照图2的说法，还有一个条件是log[iter].Term == rf.currentterm
+										// 解决图8(c)问题，不会发生图8(c)的(term=2, index=2, cmd=2)被提交以后又被覆盖的问题。
+										continue
+									}
+									// 本term内append的日志。
+									count := 1 // 超过iter的个数，超过半数即可增加commitindex
+									//DPrintf("[%v] %v : matchindex - %+v", logid, rf.me, rf.matchindex)
+									for j := 0; j < len(rf.peers); j++ {
+										if j != rf.me {
+											if rf.matchindex[j] >= iter {
+												count += 1
+											}
 										}
 									}
-								}
-								if count*2 > len(rf.peers) {
-									rf.commitindex = iter
-									DPrintf("[%v] %v: {term - %v role - %v} notify commit logs\n",
-										logid, rf.me, rf.currentterm, RoleString(rf.role))
-									rf.commitcond.Signal()
-								} else {
-									// 当前尝试的下标都不行，下面的更不行
-									break
+									if count*2 > len(rf.peers) {
+										rf.commitindex = iter
+										DPrintf("[%v] %v: {term - %v role - %v} notify commit logs\n",
+											logid, rf.me, rf.currentterm, RoleString(rf.role))
+										rf.commitcond.Signal()
+									} else {
+										// 当前尝试的下标都不行，下面的更不行
+										break
+									}
 								}
 							}
 						}
+						rf.mu.Unlock()
 					}
-					rf.mu.Unlock()
-				}(i,  term, leaderid, leadercommitindex, lockappendentriesargs)
+				}(i,  term, leaderid, leadercommitindex, locksnapshotorlogargs)
 			}
 		}
 		time.Sleep(rf.heartbeatinteval)
@@ -1032,6 +1035,7 @@ func (rf *Raft) GenerateSnapshot(kvstate []byte, commitindex int) {
 	rf.log = rf.log[commitindex - rf.snapshotlastindex:]
 	rf.snapshotlastindex = commitindex
 	rf.snapshotlastterm = rf.log[0].Term
+	// TODO 需要更新lastapplied和commitindex吗？
 	raftstate := rf.SerializeRaftState()
 	// kvstate就是snapshot。
 	rf.persister.SaveStateAndSnapshot(raftstate, kvstate)
@@ -1051,6 +1055,7 @@ type InstallSnapshotArgs struct {
 type InstallSnapshotReply struct {
 	// 假设follower的term比leader还高，要回复这个term。leader会根据这个值重置自己的term。
 	Term    int
+	LogId   int
 }
 
 func (rf *Raft) sendSnapshot(server int, args *InstallSnapshotArgs, reply *InstallSnapshotReply) bool {
@@ -1151,6 +1156,26 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 	// 更新到状态机
 	rf.commitcond.Signal()
 	reply.Term = rf.currentterm
+}
+
+/*
+	leader端用来处理InstallSnapshot的回复
+ */
+func (rf *Raft) HandleInstallSnapshotReply(ok bool, args *InstallSnapshotArgs,
+	reply *InstallSnapshotReply, nodeindex int, locksnapshotorlogargs []LockSnapshotOrLog) {
+	// TODO 实现
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+}
+
+/*
+	leader端用来处理AppendEntries的回复
+*/
+func (rf *Raft) HandleAppendEntriesReply(ok bool, args *AppendEntriesArgs,
+	reply *AppendEntriesReply, nodeindex int, locksnapshotorlogargs []LockSnapshotOrLog) {
+	// TODO 实现
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 }
 
 func IntMax(x int, y int) int {
