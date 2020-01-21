@@ -136,26 +136,34 @@ type Raft struct {
 	snapshotsignalcount int32
 }
 
+/*
+	使用者自己需要加锁
+ */
+func (rf *Raft) ResetRaftStatus(term int, role int, votefor int, leaderid int) {
+	rf.currentterm = term
+	rf.role = role
+	rf.votedfor = votefor
+	rf.leaderid = leaderid
+}
+
 // return currentTerm and whether this server
 // believes it is the leader.
 func (rf *Raft) GetState() (int, bool) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	var term int
-	var isleader bool
 	// Your code here (2A).
-	term = rf.currentterm
-	isleader = false
 	if rf.leaderid == rf.me {
-		isleader = true
+		return rf.currentterm, true
+	} else {
+		return rf.currentterm, false
 	}
-	return term, isleader
 }
 
 //
 // save Raft's persistent state to stable storage,
 // where it can later be retrieved after a crash and restart.
 // see paper's Figure 2 for a description of what should be persistent.
+// 应该要加上snapshot
 //
 func (rf *Raft) persist() {
 	// rf.persister.SaveRaftState(data)
@@ -184,10 +192,6 @@ func (rf *Raft) readPersist(data []byte) {
 	}
 }
 
-//
-// example RequestVote RPC arguments structure.
-// field names must start with capital letters!
-//
 type RequestVoteArgs struct {
 	// Your data here (2A, 2B).
 	Term            int // candidate的term
@@ -197,10 +201,6 @@ type RequestVoteArgs struct {
 	LogId           int // debug
 }
 
-//
-// example RequestVote RPC reply structure.
-// field names must start with capital letters!
-//
 type RequestVoteReply struct {
 	// Your data here (2A).
 	Term        int  // 这里应该是其他peer当前的term，用于返回给发起投票的candidate更新。
@@ -245,11 +245,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		if args.Term > rf.currentterm {
 			DPrintf("[%v] %v : {term - %v role - %v}: - change term because recevie vote from %v { term - %v }\n",
 				logid, rf.me, rf.currentterm, RoleString(rf.role), args.CandidateIndex, args.Term)
-			rf.role = FOLLOWER
-			rf.currentterm = args.Term
-			rf.votedfor = -1
-			// 需要重设leaderid
-			rf.leaderid = -1
+			rf.ResetRaftStatus(args.Term, FOLLOWER, -1, -1)
 		}
 		candidatelogindex := args.LastLogIndex
 		candidatelogterm := args.LastLogItemTerm
@@ -315,13 +311,14 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 // that the caller passes the address of the reply struct with &, not
 // the struct itself.
 //
-/* RPC这个模块看起来work的方式我还有一些没明白
-sendRequestVote会阻塞，所以要注意使用goroutine来调用
-这里的通信问题是:
-1.例如sendRequestVote()发送出去以后，收到的回复可能是long delay，突然收到一个很早前发出去的回复。
-2.网络隔离。直接某个node就没了，它发的也出不去，它收也收不到其他node的请求。
-3.乱序，什么样的情况？
-一般的情况下，每次通信都是同一个端口吗？如果是同一个端口，TCP协议应该保证了是没法乱序的吧？
+/*
+	RPC这个模块看起来work的方式我还有一些没明白
+	sendRequestVote会阻塞，所以要注意使用goroutine来调用
+	这里的通信问题是:
+	1.例如sendRequestVote()发送出去以后，收到的回复可能是long delay，突然收到一个很早前发出去的回复。
+	2.网络隔离。直接某个node就没了，它发的也出不去，它收也收不到其他node的请求。
+	3.乱序，什么样的情况？
+	一般的情况下，每次通信都是同一个端口吗？如果是同一个端口，TCP协议应该保证了是没法乱序的吧？
 */
 func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
 	rf.mu.Lock()
@@ -334,10 +331,7 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 	DPrintf("[%v] %v : sendRequestVote receive %v reply, time - %v, args - %+v reply - %+v\n",
 		logid, rf.me, server, time.Now(), args, reply)
 	if reply.Term > rf.currentterm {
-		rf.currentterm = reply.Term
-		rf.role = FOLLOWER
-		rf.votedfor = -1
-		rf.leaderid = -1
+		rf.ResetRaftStatus(reply.Term, FOLLOWER, -1, -1)
 		rf.persist()
 	}
 	rf.mu.Unlock()
@@ -392,10 +386,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	if args.Term > rf.currentterm {
 		DPrintf("[%v] %v : {term - %v role - %v}: - change term because receive heart beat from %v args - %+v\n",
 			logid, rf.me, rf.currentterm, RoleString(rf.role), args.LeaderId, args)
-		rf.role = FOLLOWER
-		rf.currentterm = args.Term
-		rf.votedfor = args.LeaderId
-		rf.leaderid = args.LeaderId
+		rf.ResetRaftStatus(args.Term, FOLLOWER, args.LeaderId, args.LeaderId)
 	}
 	if rf.currentterm == args.Term && rf.leaderid != -1 && rf.leaderid != args.LeaderId {
 		DPrintf("[%v] %v: {term - %v role - %v} : receive invalid heart beat "+
@@ -414,10 +405,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	DPrintf("[%v] %v: {term - %v role - %v} receive valid heart beat from %v, args - %+v\n",
 		logid, rf.me, rf.currentterm, RoleString(rf.role), args.LeaderId, args)
 	reply.Success = true
-	rf.currentterm = args.Term
-	rf.role = FOLLOWER
-	rf.votedfor = args.LeaderId
-	rf.leaderid = args.LeaderId
+	rf.ResetRaftStatus(args.Term, FOLLOWER, args.LeaderId, args.LeaderId)
 	DPrintf("[%v] %v: {term - %v role - %v} update last heart beat because receive from %v, "+
 		"%+v\n", logid, rf.me, rf.currentterm, RoleString(rf.role), args.LeaderId, args)
 	// 都是合法的，所以要更新心跳时间
@@ -489,10 +477,7 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 	DPrintf("[%v] %v : sendAppendEntries(receive) %v reply, time - %v, args - %+v, reply - %+v\n",
 		logid, rf.me, server, time.Now(), args, reply)
 	if reply.Term > rf.currentterm {
-		rf.currentterm = reply.Term
-		rf.role = FOLLOWER
-		rf.votedfor = -1
-		rf.leaderid = -1
+		rf.ResetRaftStatus(reply.Term, FOLLOWER, -1, -1)
 		rf.persist()
 	}
 	rf.mu.Unlock()
@@ -720,8 +705,7 @@ func (rf *Raft) DoAppendEntries() {
 						reply := &InstallSnapshotReply{}
 						reply.LogId = logid
 						ok := rf.sendSnapshot(nodeindex, args, reply)
-						rf.HandleInstallSnapshotReply(ok, args, reply, nodeindex, locksnapshotorlogargs)
-
+						rf.HandleInstallSnapshotReply(logid, ok, args, reply, nodeindex, locksnapshotorlogargs)
 					} else {
 						// 有日志发日志，没日志发心跳
 						logargs := locksnapshotorlogargs[nodeindex].syncEntry.(LockLogArgs)
@@ -731,64 +715,7 @@ func (rf *Raft) DoAppendEntries() {
 						reply := &AppendEntriesReply{}
 						reply.LogId = logid
 						ok := rf.sendAppendEntries(nodeindex, args, reply)
-						// TODO 替换成HandleAppendEntriesReply
-						/*
-							按照图2的说法，两种情况会返回reply.Success = false。
-							1.follower的term比当前的还新。在sendAppendEntries会把当前这个leader变成follower，不会再转入下面的判断
-							2.follower的日志没有完全，需要reply.Success = false以让leader发多余的日志给follower
-						*/
-						rf.mu.Lock()
-						if ok && rf.role == LEADER && args.Term == rf.currentterm {
-							if !reply.Success {
-								/*
-									在没有改变AppendEntriesReply的参数的情况下，需要一步步回退
-									在下一次的循环中，多发一条日志给这个follower
-								*/
-								// rf.nextindex[nodeindex] = rf.nextindex[nodeindex] - 1
-								if reply.ConflictIndex != -1 {
-									rf.nextindex[nodeindex] = reply.ConflictIndex // fast back
-								}
-							} else {
-								/*
-									成功的复制了很多日志，更新nextindex/matchindex。
-									这里要使用上面的endindex，因为len(rf.log)可能已经变了。
-									nextindex更新为endindex+1，因为follower已经在rf.log[endindex]一样了，下次从endindex+1发同步日志
-								*/
-								rf.nextindex[nodeindex] = logargs.endindex + 1
-								rf.matchindex[nodeindex] = logargs.endindex
-								for iter := rf.commitindex + 1; iter < len(rf.log); iter++ {
-									/*
-										由于matchindex增加了，commitindex可能可以增加了。
-										由于placeholder的存在，从位置1开始提交
-									*/
-									if rf.log[iter].Term != rf.currentterm {
-										// 按照图2的说法，还有一个条件是log[iter].Term == rf.currentterm
-										// 解决图8(c)问题，不会发生图8(c)的(term=2, index=2, cmd=2)被提交以后又被覆盖的问题。
-										continue
-									}
-									// 本term内append的日志。
-									count := 1 // 超过iter的个数，超过半数即可增加commitindex
-									//DPrintf("[%v] %v : matchindex - %+v", logid, rf.me, rf.matchindex)
-									for j := 0; j < len(rf.peers); j++ {
-										if j != rf.me {
-											if rf.matchindex[j] >= iter {
-												count += 1
-											}
-										}
-									}
-									if count*2 > len(rf.peers) {
-										rf.commitindex = iter
-										DPrintf("[%v] %v: {term - %v role - %v} notify commit logs\n",
-											logid, rf.me, rf.currentterm, RoleString(rf.role))
-										rf.commitcond.Signal()
-									} else {
-										// 当前尝试的下标都不行，下面的更不行
-										break
-									}
-								}
-							}
-						}
-						rf.mu.Unlock()
+						rf.HandleAppendEntriesReply(logid, ok, args, reply, nodeindex, locksnapshotorlogargs)
 					}
 				}(i,  term, leaderid, leadercommitindex, locksnapshotorlogargs)
 			}
@@ -910,7 +837,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.log = append(rf.log, Log{0, -1})
 	rf.commitindex = 0
 	rf.lastapplied = 0
-	// 由于快照的日志压缩要求，snapshotlastindex设定为-1先。
+	// TODO 按照语义来说，应该也设为0。
 	rf.snapshotlastindex = -1
 	rf.snapshotlastterm = 0
 	rf.snapshotsignalcount = 0
@@ -1069,17 +996,14 @@ func (rf *Raft) sendSnapshot(server int, args *InstallSnapshotArgs, reply *Insta
 	DPrintf("[%v] %v : sendInstallSnapshot(receive) %v reply, time - %v, args - %+v, reply - %+v\n",
 		logid, rf.me, server, time.Now(), args, reply)
 	if reply.Term > rf.currentterm {
-		rf.currentterm = reply.Term
-		rf.role = FOLLOWER
-		rf.votedfor = -1
-		rf.leaderid = -1
+		rf.ResetRaftStatus(reply.Term, FOLLOWER, -1, -1)
 		rf.persist()
 	}
 	rf.mu.Unlock()
 	return ok
 }
 
-// 处理安装Snapshot的请求。
+// 处理安装Snapshot的请求。x
 func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapshotReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
@@ -1095,10 +1019,7 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 	if args.Term > rf.currentterm {
 		DPrintf("[%v] %v : {term - %v role - %v}: - change term because receive InstallSnapshot from %v args - %+v\n",
 			logid, rf.me, rf.currentterm, RoleString(rf.role), args.LeaderId, args)
-		rf.role = FOLLOWER
-		rf.currentterm = args.Term
-		rf.votedfor = args.LeaderId
-		rf.leaderid = args.LeaderId
+		rf.ResetRaftStatus(args.Term, FOLLOWER, args.LeaderId, args.LeaderId)
 	}
 	if args.SnapshotLastIndex <= rf.snapshotlastindex {
 		DPrintf("[%v] %v: {term - %v role - %v} : receive useless InstallSnapshot "+
@@ -1161,21 +1082,74 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 /*
 	leader端用来处理InstallSnapshot的回复
  */
-func (rf *Raft) HandleInstallSnapshotReply(ok bool, args *InstallSnapshotArgs,
+func (rf *Raft) HandleInstallSnapshotReply(logid int, ok bool, args *InstallSnapshotArgs,
 	reply *InstallSnapshotReply, nodeindex int, locksnapshotorlogargs []LockSnapshotOrLog) {
-	// TODO 实现
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+	if ok && rf.role == LEADER && args.Term == rf.currentterm {
+		rf.matchindex[nodeindex] = args.SnapshotLastIndex
+		rf.nextindex[nodeindex] = args.SnapshotLastIndex + 1
+	}
 }
 
 /*
 	leader端用来处理AppendEntries的回复
 */
-func (rf *Raft) HandleAppendEntriesReply(ok bool, args *AppendEntriesArgs,
+func (rf *Raft) HandleAppendEntriesReply(logid int, ok bool, args *AppendEntriesArgs,
 	reply *AppendEntriesReply, nodeindex int, locksnapshotorlogargs []LockSnapshotOrLog) {
-	// TODO 实现
+	/*
+		按照图2的说法，两种情况会返回reply.Success = false。
+		1.follower的term比当前的还新。在sendAppendEntries会把当前这个leader变成follower，不会再转入下面的判断
+		2.follower的日志没有完全，需要reply.Success = false以让leader发多余的日志给follower
+	*/
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+	logargs := locksnapshotorlogargs[nodeindex].syncEntry.(LockLogArgs)
+	if ok && rf.role == LEADER && args.Term == rf.currentterm {
+		if !reply.Success {
+			if reply.ConflictIndex != -1 {
+				rf.nextindex[nodeindex] = reply.ConflictIndex // fast back，一个term回退一次
+			}
+		} else {
+			/*
+				成功的复制了很多日志，更新nextindex/matchindex。
+				这里要使用上面的endindex，因为len(rf.log)可能已经变了。
+				nextindex更新为endindex+1，因为follower已经在rf.log[endindex]一样了，下次从endindex+1发同步日志
+			*/
+			rf.nextindex[nodeindex] = logargs.endindex + 1
+			rf.matchindex[nodeindex] = logargs.endindex
+			for iter := rf.commitindex + 1; iter < len(rf.log); iter++ {
+				/*
+					由于matchindex增加了，commitindex可能可以增加了。
+					由于placeholder的存在，从位置1开始提交
+				*/
+				if rf.log[iter].Term != rf.currentterm {
+					// 按照图2的说法，还有一个条件是log[iter].Term == rf.currentterm
+					// 解决图8(c)问题，不会发生图8(c)的(term=2, index=2, cmd=2)被提交以后又被覆盖的问题。
+					continue
+				}
+				// 本term内append的日志。
+				count := 1 // 超过iter的个数，超过半数即可增加commitindex
+				//DPrintf("[%v] %v : matchindex - %+v", logid, rf.me, rf.matchindex)
+				for j := 0; j < len(rf.peers); j++ {
+					if j != rf.me {
+						if rf.matchindex[j] >= iter {
+							count += 1
+						}
+					}
+				}
+				if count*2 > len(rf.peers) {
+					rf.commitindex = iter
+					DPrintf("[%v] %v: {term - %v role - %v} notify commit logs\n",
+						logid, rf.me, rf.currentterm, RoleString(rf.role))
+					rf.commitcond.Signal()
+				} else {
+					// 当前尝试的下标都不行，下面的更不行
+					break
+				}
+			}
+		}
+	}
 }
 
 func IntMax(x int, y int) int {

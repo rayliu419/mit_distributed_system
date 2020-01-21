@@ -9,6 +9,10 @@ package raft
 // test with the original before submitting.
 //
 
+/*
+	1.假设在persist()的中途挂了怎么办?
+	2.persist在每次响应以后其实都persist了，按照lab中每次都是重新序列化byte，是否会有性能问题。实际上应该只需要append新的log。
+ */
 import "sync"
 
 type Persister struct {
