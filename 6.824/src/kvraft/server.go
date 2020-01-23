@@ -97,7 +97,7 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	var commitop Op
 	select {
 	case commitop = <-ch:
-		close(ch)
+		//close(ch)
 		// 当前的leadre可以提交日志，说明可以联系半数以上的
 	case <-time.After(kv.timeout):
 		// 超时了，相当于失败
@@ -194,7 +194,7 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 			// ListenToRaftCommit 会将此index提交的op传过来
 			DPrintf("KVServer[%v] WaitForCommit : index %v commit op %+v expected op - %+v",
 				kv.me, index, commitop, op)
-			close(ch)
+			//close(ch)
 		}
 	}
 	if !sameOp(op, commitop) {
@@ -215,12 +215,17 @@ func (kv *KVServer) ListenToRaftCommit() {
 		select {
 		case msg := <-kv.applyCh:
 			{
-				// 监听raft的消息，并且分发请求给index2chanop
 				if !msg.CommandValid {
-					// snapshot请求
+					/*
+						关于snapshot这里有个问题，就是假设由于网络原因，假设生成了一个snapshot，然后有append了一个log。
+						正确的做法是先apply snapshot, 再apply log，但是乱序发生了，log先发过来，写db。然后快照来了，
+						db被完全覆盖了，这样前面那条log就被丢失了。
+						这种情况怎么解决呢？
+					 */
 					buf := msg.Command.([]byte)
 					kv.mu.Lock()
-					kv.clientid2maxseqid, kv.database = kv.DeserializeKVState(buf) // restore kvDB and cid2seq
+					// restore kvDB and cid2seq
+					kv.clientid2maxseqid, kv.database = kv.DeserializeKVState(buf)
 					kv.mu.Unlock()
 				} else {
 					// 日志请求
@@ -260,16 +265,22 @@ func (kv *KVServer) ListenToRaftCommit() {
 }
 
 func (kv *KVServer) CheckAndGenerateSnapshot(commitindex int) {
-	if kv.maxraftstate == -1 || kv.persister.RaftStateSize() > 9/10*kv.maxraftstate {
+	raftstatesize := kv.persister.RaftStateSize()
+	limitsize :=  int(0.8 * float32(kv.maxraftstate))
+	DPrintf("KVServer[%v] maxraftstatesize - %v, currentraftstate size - %v limitsize - %v",
+		kv.me, kv.maxraftstate, raftstatesize, limitsize)
+	if kv.maxraftstate == -1 || raftstatesize < limitsize {
 		// 90% 阈值时就要发起GenerateSnapshot()
 		return
 	}
+	DPrintf("KVServer[%v] start to generate snapshot ",
+		kv.me)
 	/*
 		最开始我打算把kvstate也持久化放在另外一个goroutine()，但是实际上不行。因为假设ListenToRaftCommit()连续监听到
 		两个commit，第一个commit在goroutine()里传入commitindex和kv的snapshot可能对不上了。因为可能ListenToRaftCommit()
 		又加入了一个新的commit的数据。
 		上面的情况，从结果看好像没问题，就是那个commit在恢复时，又重新写了一次。
-	 */
+	*/
 	kvstate := kv.SerializeKVState()
 	go kv.rf.GenerateSnapshot(kvstate, commitindex)
 }
@@ -286,8 +297,6 @@ func (kv *KVServer) DeserializeKVState(kvstate []byte) (map[int64]int64, map[str
 }
 
 func (kv *KVServer) SerializeKVState() []byte {
-	kv.mu.Lock()
-	defer kv.mu.Unlock()
 	w := new(bytes.Buffer)
 	e := gob.NewEncoder(w)
 	if err := e.Encode(kv.clientid2maxseqid); err != nil {
@@ -297,6 +306,15 @@ func (kv *KVServer) SerializeKVState() []byte {
 		panic(fmt.Errorf("KVServer[%v] encode database fail: %v", kv.me, err))
 	}
 	return w.Bytes()
+}
+
+func (kv *KVServer) LoadSnapshot(kvstate []byte) {
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+	if kvstate != nil || len(kvstate) != 0 {
+		DPrintf("KVServer[%v] find snapshot, recover from snapshot", kv.me)
+		kv.clientid2maxseqid, kv.database = kv.DeserializeKVState(kvstate) // restore kvDB and cid2seq
+	}
 }
 
 //
@@ -354,6 +372,7 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.database = make(map[string]string)
 	kv.index2chanop = make(map[int]chan Op)
 	kv.timeout = time.Duration(200) * time.Millisecond
+	kv.LoadSnapshot(kv.persister.ReadSnapshot())
 	go kv.ListenToRaftCommit()
 	return kv
 }

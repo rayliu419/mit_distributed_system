@@ -1,0 +1,90 @@
+Test: InstallSnapshot RPC (3B) ...
+labgob warning: Decoding into a non-default variable/field Err may not work
+2020/01/23 20:35:06 [2157] 0 : { term - 0 role - FOLLOWER entries - [{Term:0 Command:-1}] commitindex - 0} wake up
+2020/01/23 20:35:06 0 : change term from 0 to 1, start to vote
+2020/01/23 20:35:06 [2159] 0: sendRequestVote(send) to 2, args - &{Term:1 CandidateIndex:0 LastLogIndex:0 LastLogItemTerm:0 LogId:2159}
+2020/01/23 20:35:06 [2160] 0: sendRequestVote(send) to 1, args - &{Term:1 CandidateIndex:0 LastLogIndex:0 LastLogItemTerm:0 LogId:2160}
+2020/01/23 20:35:06 [2163] 2 : {term - 0 role - FOLLOWER}: - change term because recevie vote from 0 { term - 1 }
+2020/01/23 20:35:06 [2163] 2 : {term - 1 role - FOLLOWER}: accept vote from 0 { term - 1 }
+2020/01/23 20:35:06 [2164] 1 : {term - 0 role - FOLLOWER}: - change term because recevie vote from 0 { term - 1 }
+2020/01/23 20:35:06 [2164] 1 : {term - 1 role - FOLLOWER}: accept vote from 0 { term - 1 }
+2020/01/23 20:35:06 [2163] 2 : { term - 1 role - FOLLOWER entries - [{Term:0 Command:-1}] commitindex - 0} wake up
+2020/01/23 20:35:06 2 : change term from 1 to 2, start to vote
+2020/01/23 20:35:06 [2159] 0 : sendRequestVote(receive) 2 reply, args - &{Term:1 CandidateIndex:0 LastLogIndex:0 LastLogItemTerm:0 LogId:2159} reply - &{Term:1 VoteGranted:true LogId:2159}
+2020/01/23 20:35:06 [2165] 0 : get one vote from 2
+2020/01/23 20:35:06 [2166] 2: sendRequestVote(send) to 1, args - &{Term:2 CandidateIndex:2 LastLogIndex:0 LastLogItemTerm:0 LogId:2166}
+2020/01/23 20:35:06 [2165] 1 : { term - 1 role - FOLLOWER entries - [{Term:0 Command:-1}] commitindex - 0} wake up
+2020/01/23 20:35:06 [2167] 2: sendRequestVote(send) to 0, args - &{Term:2 CandidateIndex:2 LastLogIndex:0 LastLogItemTerm:0 LogId:2167}
+2020/01/23 20:35:06 [2167] 0 : {term - 1 } become leader
+2020/01/23 20:35:06 [2160] 0 : sendRequestVote(receive) 1 reply, args - &{Term:1 CandidateIndex:0 LastLogIndex:0 LastLogItemTerm:0 LogId:2160} reply - &{Term:1 VoteGranted:true LogId:2160}
+2020/01/23 20:35:06 [2169] 0 : sendAppendEntries(send) to 1, args - &{Term:1 LeaderId:0 PrevLogIndex:0 PrevLogTerm:0 Entries:[] LeaderCommitIndex:0 LogId:2169}
+2020/01/23 20:35:06 [2171] 1 : {term - 1 role - CANDIDATE}: - change term because recevie vote from 2 { term - 2 }
+2020/01/23 20:35:06 [2171] 1 : {term - 2 role - FOLLOWER}: accept vote from 2 { term - 2 }
+2020/01/23 20:35:06 [2171] 0 : {term - 1 role - LEADER}: - change term because recevie vote from 2 { term - 2 }
+2020/01/23 20:35:06 [2172] 0 : {term - 2 role - FOLLOWER}: accept vote from 2 { term - 2 }
+2020/01/23 20:35:06 [2166] 2 : sendRequestVote(receive) 1 reply, args - &{Term:2 CandidateIndex:2 LastLogIndex:0 LastLogItemTerm:0 LogId:2166} reply - &{Term:2 VoteGranted:true LogId:2166}
+2020/01/23 20:35:06 [2172] 2 : get one vote from 1
+2020/01/23 20:35:06 [2172] 2 : {term - 2 } become leader
+2020/01/23 20:35:06 [2173] 2 : sendAppendEntries(send) to 1, args - &{Term:2 LeaderId:2 PrevLogIndex:0 PrevLogTerm:0 Entries:[] LeaderCommitIndex:0 LogId:2173}
+2020/01/23 20:35:06 [2171] 0 : sendAppendEntries(send) to 2, args - &{Term:1 LeaderId:0 PrevLogIndex:0 PrevLogTerm:0 Entries:[] LeaderCommitIndex:0 LogId:2171}
+2020/01/23 20:35:06 [2169] 1: {term - 2 role - FOLLOWER} receive AppendEntries from 0, args - &{Term:1 LeaderId:0 PrevLogIndex:0 PrevLogTerm:0 Entries:[] LeaderCommitIndex:0 LogId:2169}
+2020/01/23 20:35:06 [2174] 2 : sendAppendEntries(send) to 0, args - &{Term:2 LeaderId:2 PrevLogIndex:0 PrevLogTerm:0 Entries:[] LeaderCommitIndex:0 LogId:2174}
+2020/01/23 20:35:06 [2169] 1: {term - 2 role - FOLLOWER} : receive invalid heart beat from 0, args - &{Term:1 LeaderId:0 PrevLogIndex:0 PrevLogTerm:0 Entries:[] LeaderCommitIndex:0 LogId:2169}
+2020/01/23 20:35:06 [2167] 2 : sendRequestVote(receive) 0 reply, args - &{Term:2 CandidateIndex:2 LastLogIndex:0 LastLogItemTerm:0 LogId:2167} reply - &{Term:2 VoteGranted:true LogId:2167}
+2020/01/23 20:35:06 [2171] 2: {term - 2 role - LEADER} receive AppendEntries from 0, args - &{Term:1 LeaderId:0 PrevLogIndex:0 PrevLogTerm:0 Entries:[] LeaderCommitIndex:0 LogId:2171}
+2020/01/23 20:35:06 [2171] 2: {term - 2 role - LEADER} : receive invalid heart beat from 0, args - &{Term:1 LeaderId:0 PrevLogIndex:0 PrevLogTerm:0 Entries:[] LeaderCommitIndex:0 LogId:2171}
+2020/01/23 20:35:06 [2174] 0: {term - 2 role - FOLLOWER} receive AppendEntries from 2, args - &{Term:2 LeaderId:2 PrevLogIndex:0 PrevLogTerm:0 Entries:[] LeaderCommitIndex:0 LogId:2174}
+2020/01/23 20:35:06 [2174] 0: {term - 2 role - FOLLOWER} receive valid heart beat from 2, args - &{Term:2 LeaderId:2 PrevLogIndex:0 PrevLogTerm:0 Entries:[] LeaderCommitIndex:0 LogId:2174}
+2020/01/23 20:35:06 [2174] 0: {term - 2 role - FOLLOWER} update last heart beat because receive from 2, &{Term:2 LeaderId:2 PrevLogIndex:0 PrevLogTerm:0 Entries:[] LeaderCommitIndex:0 LogId:2174}
+2020/01/23 20:35:06 [2174] 0: { term - 2 role - FOLLOWER mylog-[{Term:0 Command:-1}] mycommitindex - 0 remotelog - [] remotecommitindex - 0 }
+2020/01/23 20:35:06 0: {term - 2 role - FOLLOWER} : lastapplied - 0 commitindex - 0 logsize - 1 snapshotlastindex - 0 snapshotlastterm - 0
+2020/01/23 20:35:06 [2173] 1: {term - 2 role - FOLLOWER} receive AppendEntries from 2, args - &{Term:2 LeaderId:2 PrevLogIndex:0 PrevLogTerm:0 Entries:[] LeaderCommitIndex:0 LogId:2173}
+2020/01/23 20:35:06 [2173] 1: {term - 2 role - FOLLOWER} receive valid heart beat from 2, args - &{Term:2 LeaderId:2 PrevLogIndex:0 PrevLogTerm:0 Entries:[] LeaderCommitIndex:0 LogId:2173}
+2020/01/23 20:35:06 Raft[0]: logs - [{Term:0 Command:-1}]
+2020/01/23 20:35:06 [2174] 0: {term - 2 role - FOLLOWER} after copy logs - [{Term:0 Command:-1}]
+2020/01/23 20:35:06 [2174] 0: {term - 2 role - FOLLOWER} keep commit index 0
+2020/01/23 20:35:06 [2173] 1: {term - 2 role - FOLLOWER} update last heart beat because receive from 2, &{Term:2 LeaderId:2 PrevLogIndex:0 PrevLogTerm:0 Entries:[] LeaderCommitIndex:0 LogId:2173}
+2020/01/23 20:35:06 [2169] 0 : sendAppendEntries(receive) 1 reply, args - &{Term:1 LeaderId:0 PrevLogIndex:0 PrevLogTerm:0 Entries:[] LeaderCommitIndex:0 LogId:2169}, reply - &{Term:2 Success:false LogId:2169 ConflictIndex:0 ConflictTerm:0}
+2020/01/23 20:35:06 [2173] 1: { term - 2 role - FOLLOWER mylog-[{Term:0 Command:-1}] mycommitindex - 0 remotelog - [] remotecommitindex - 0 }
+2020/01/23 20:35:06 1: {term - 2 role - FOLLOWER} : lastapplied - 0 commitindex - 0 logsize - 1 snapshotlastindex - 0 snapshotlastterm - 0
+2020/01/23 20:35:06 2 : {term - 2 role - LEADER} : receive command {Put a A 3000368285324289447 3493246102772872167 0}, accept
+2020/01/23 20:35:06 Raft[1]: logs - [{Term:0 Command:-1}]
+2020/01/23 20:35:06 [2173] 1: {term - 2 role - FOLLOWER} after copy logs - [{Term:0 Command:-1}]
+2020/01/23 20:35:06 [2171] 0 : sendAppendEntries(receive) 2 reply, args - &{Term:1 LeaderId:0 PrevLogIndex:0 PrevLogTerm:0 Entries:[] LeaderCommitIndex:0 LogId:2171}, reply - &{Term:2 Success:false LogId:2171 ConflictIndex:0 ConflictTerm:0}
+2020/01/23 20:35:06 [2173] 1: {term - 2 role - FOLLOWER} keep commit index 0
+2020/01/23 20:35:06 [2176] 2 : accept command {index - 1 term - 2 command - {Put a A 3000368285324289447 3493246102772872167 0}}
+2020/01/23 20:35:06 [2174] 2 : sendAppendEntries(receive) 0 reply, args - &{Term:2 LeaderId:2 PrevLogIndex:0 PrevLogTerm:0 Entries:[] LeaderCommitIndex:0 LogId:2174}, reply - &{Term:2 Success:true LogId:2174 ConflictIndex:0 ConflictTerm:0}
+2020/01/23 20:35:06 [2173] 2 : sendAppendEntries(receive) 1 reply, args - &{Term:2 LeaderId:2 PrevLogIndex:0 PrevLogTerm:0 Entries:[] LeaderCommitIndex:0 LogId:2173}, reply - &{Term:2 Success:true LogId:2173 ConflictIndex:0 ConflictTerm:0}
+2020/01/23 20:35:06 [2177] 2 : sendAppendEntries(send) to 1, args - &{Term:2 LeaderId:2 PrevLogIndex:0 PrevLogTerm:0 Entries:[{Term:2 Command:{Op:Put Key:a Value:A ClientId:3000368285324289447 SeqId:3493246102772872167 CommitTerm:0}}] LeaderCommitIndex:0 LogId:2177}
+2020/01/23 20:35:06 [2177] 2 : sendAppendEntries(send) to 0, args - &{Term:2 LeaderId:2 PrevLogIndex:0 PrevLogTerm:0 Entries:[{Term:2 Command:{Op:Put Key:a Value:A ClientId:3000368285324289447 SeqId:3493246102772872167 CommitTerm:0}}] LeaderCommitIndex:0 LogId:2177}
+2020/01/23 20:35:06 [2177] 1: {term - 2 role - FOLLOWER} receive AppendEntries from 2, args - &{Term:2 LeaderId:2 PrevLogIndex:0 PrevLogTerm:0 Entries:[{Term:2 Command:{Op:Put Key:a Value:A ClientId:3000368285324289447 SeqId:3493246102772872167 CommitTerm:0}}] LeaderCommitIndex:0 LogId:2177}
+2020/01/23 20:35:06 [2177] 1: {term - 2 role - FOLLOWER} receive valid heart beat from 2, args - &{Term:2 LeaderId:2 PrevLogIndex:0 PrevLogTerm:0 Entries:[{Term:2 Command:{Op:Put Key:a Value:A ClientId:3000368285324289447 SeqId:3493246102772872167 CommitTerm:0}}] LeaderCommitIndex:0 LogId:2177}
+2020/01/23 20:35:06 [2177] 1: {term - 2 role - FOLLOWER} update last heart beat because receive from 2, &{Term:2 LeaderId:2 PrevLogIndex:0 PrevLogTerm:0 Entries:[{Term:2 Command:{Op:Put Key:a Value:A ClientId:3000368285324289447 SeqId:3493246102772872167 CommitTerm:0}}] LeaderCommitIndex:0 LogId:2177}
+2020/01/23 20:35:06 [2177] 1: { term - 2 role - FOLLOWER mylog-[{Term:0 Command:-1}] mycommitindex - 0 remotelog - [{Term:2 Command:{Op:Put Key:a Value:A ClientId:3000368285324289447 SeqId:3493246102772872167 CommitTerm:0}}] remotecommitindex - 0 }
+2020/01/23 20:35:06 1: {term - 2 role - FOLLOWER} : lastapplied - 0 commitindex - 0 logsize - 1 snapshotlastindex - 0 snapshotlastterm - 0
+2020/01/23 20:35:06 Raft[1]: logs - [{Term:0 Command:-1}]
+2020/01/23 20:35:06 [2177] 1: {term - 2 role - FOLLOWER} after copy logs - [{Term:0 Command:-1} {Term:2 Command:{Op:Put Key:a Value:A ClientId:3000368285324289447 SeqId:3493246102772872167 CommitTerm:0}}]
+2020/01/23 20:35:06 [2177] 0: {term - 2 role - FOLLOWER} receive AppendEntries from 2, args - &{Term:2 LeaderId:2 PrevLogIndex:0 PrevLogTerm:0 Entries:[{Term:2 Command:{Op:Put Key:a Value:A ClientId:3000368285324289447 SeqId:3493246102772872167 CommitTerm:0}}] LeaderCommitIndex:0 LogId:2177}
+2020/01/23 20:35:06 [2177] 0: {term - 2 role - FOLLOWER} receive valid heart beat from 2, args - &{Term:2 LeaderId:2 PrevLogIndex:0 PrevLogTerm:0 Entries:[{Term:2 Command:{Op:Put Key:a Value:A ClientId:3000368285324289447 SeqId:3493246102772872167 CommitTerm:0}}] LeaderCommitIndex:0 LogId:2177}
+2020/01/23 20:35:06 [2177] 0: {term - 2 role - FOLLOWER} update last heart beat because receive from 2, &{Term:2 LeaderId:2 PrevLogIndex:0 PrevLogTerm:0 Entries:[{Term:2 Command:{Op:Put Key:a Value:A ClientId:3000368285324289447 SeqId:3493246102772872167 CommitTerm:0}}] LeaderCommitIndex:0 LogId:2177}
+2020/01/23 20:35:06 [2177] 1: {term - 2 role - FOLLOWER} keep commit index 0
+2020/01/23 20:35:06 [2177] 0: { term - 2 role - FOLLOWER mylog-[{Term:0 Command:-1}] mycommitindex - 0 remotelog - [{Term:2 Command:{Op:Put Key:a Value:A ClientId:3000368285324289447 SeqId:3493246102772872167 CommitTerm:0}}] remotecommitindex - 0 }
+2020/01/23 20:35:06 0: {term - 2 role - FOLLOWER} : lastapplied - 0 commitindex - 0 logsize - 1 snapshotlastindex - 0 snapshotlastterm - 0
+2020/01/23 20:35:06 Raft[0]: logs - [{Term:0 Command:-1}]
+2020/01/23 20:35:06 [2177] 0: {term - 2 role - FOLLOWER} after copy logs - [{Term:0 Command:-1} {Term:2 Command:{Op:Put Key:a Value:A ClientId:3000368285324289447 SeqId:3493246102772872167 CommitTerm:0}}]
+2020/01/23 20:35:06 [2177] 0: {term - 2 role - FOLLOWER} keep commit index 0
+2020/01/23 20:35:06 [2177] 2 : sendAppendEntries(receive) 1 reply, args - &{Term:2 LeaderId:2 PrevLogIndex:0 PrevLogTerm:0 Entries:[{Term:2 Command:{Op:Put Key:a Value:A ClientId:3000368285324289447 SeqId:3493246102772872167 CommitTerm:0}}] LeaderCommitIndex:0 LogId:2177}, reply - &{Term:2 Success:true LogId:2177 ConflictIndex:0 ConflictTerm:0}
+2020/01/23 20:35:06 [2177] 2: {term - 2 role - LEADER} notify commit logs
+2020/01/23 20:35:06 2: {term - 2 role - LEADER} : lastapplied - 0 commitindex - 1 logsize - 2 snapshotlastindex - 0 snapshotlastterm - 0
+2020/01/23 20:35:06 Raft[2]: logs - [{Term:0 Command:-1} {Term:2 Command:{Op:Put Key:a Value:A ClientId:3000368285324289447 SeqId:3493246102772872167 CommitTerm:0}}]
+2020/01/23 20:35:06 2: {term - 2 role - LEADER} start - 1 end - 1 commitlogs - [{Term:2 Command:{Op:Put Key:a Value:A ClientId:3000368285324289447 SeqId:3493246102772872167 CommitTerm:0}}]
+2020/01/23 20:35:06 [2177] 2 : sendAppendEntries(receive) 0 reply, args - &{Term:2 LeaderId:2 PrevLogIndex:0 PrevLogTerm:0 Entries:[{Term:2 Command:{Op:Put Key:a Value:A ClientId:3000368285324289447 SeqId:3493246102772872167 CommitTerm:0}}] LeaderCommitIndex:0 LogId:2177}, reply - &{Term:2 Success:true LogId:2177 ConflictIndex:0 ConflictTerm:0}
+panic: runtime error: index out of range
+
+goroutine 26 [running]:
+raft.(*Raft).CommitSnapshotOrLogs(0xc4200b86c0)
+	/Users/luru/workspace/github/mit_distributed_system/6.824/src/raft/raft.go:715 +0xa92
+created by raft.Make
+	/Users/luru/workspace/github/mit_distributed_system/6.824/src/raft/raft.go:923 +0x2b3
+exit status 2
+FAIL	kvraft	1.566s

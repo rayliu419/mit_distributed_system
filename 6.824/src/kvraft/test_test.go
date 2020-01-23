@@ -620,6 +620,21 @@ func TestPersistPartitionUnreliableLinearizable3A(t *testing.T) {
 // also checks that majority discards committed log entries
 // even if minority doesn't respond.
 //
+/*
+	写的数据
+	PUT a - A
+	GET a - A
+	PUT 0 - 50
+	PUT b - B
+	PUT c - C
+	PUT d - D
+	GET a - A
+	GET b - B
+	GET 1 - 1
+`	GET 49 - 49
+	PUT e - E
+
+ */
 func TestSnapshotRPC3B(t *testing.T) {
 	const nservers = 3
 	maxraftstate := 1000
