@@ -1,7 +1,11 @@
 package mapreduce
 
 import (
+	"encoding/json"
+	"fmt"
 	"hash/fnv"
+	"io/ioutil"
+	"os"
 )
 
 func doMap(
@@ -53,6 +57,35 @@ func doMap(
 	//
 	// Your code here (Part I).
 	//
+	filecontents, err := ioutil.ReadFile(inFile)
+	if err != nil {
+		fmt.Print(err)
+	}
+	var index2keyvaluepairs map[int][]KeyValue
+	index2keyvaluepairs = make(map[int][]KeyValue)
+	filecontentsstring := string(filecontents)
+	keyvaluepairs := mapF(inFile, filecontentsstring)
+	for _, item := range keyvaluepairs {
+		key := item.Key
+		value := item.Value
+		reduceindex := ihash(key) % nReduce
+		index2keyvaluepairs[reduceindex] = append(index2keyvaluepairs[reduceindex], KeyValue{key, value})
+	}
+	for reduceindex,kvarray := range index2keyvaluepairs {
+		filename := reduceName(jobName, mapTask, reduceindex)
+		fp, err := os.Create(filename)
+		if err != nil {
+			Debug("can't create %s", filename)
+		}
+		defer fp.Close()
+		enc := json.NewEncoder(fp)
+		for _, singlekv := range kvarray {
+			err := enc.Encode(&singlekv)
+			if err != nil {
+				Debug("serialize kv %v error", singlekv)
+			}
+		}
+	}
 }
 
 func ihash(s string) int {

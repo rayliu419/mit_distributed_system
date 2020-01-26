@@ -36,7 +36,7 @@ type Master struct {
 func (mr *Master) Register(args *RegisterArgs, _ *struct{}) error {
 	mr.Lock()
 	defer mr.Unlock()
-	debug("Register: worker %s\n", args.Worker)
+	Debug("Register: worker %s\n", args.Worker)
 	mr.workers = append(mr.workers, args.Worker)
 
 	// tell forwardRegistrations() that there's a new workers[] entry.
@@ -62,6 +62,7 @@ func Sequential(jobName string, files []string, nreduce int,
 	reduceF func(string, []string) string,
 ) (mr *Master) {
 	mr = newMaster("master")
+	// 直接定义两个匿名函数并传入
 	go mr.run(jobName, files, nreduce, func(phase jobPhase) {
 		switch phase {
 		case mapPhase:
@@ -129,6 +130,9 @@ func Distributed(jobName string, files []string, nreduce int, master string) (mr
 // statistics are collected, and the master is shut down.
 //
 // Note that this implementation assumes a shared file system.
+/*
+	 run后面的两个参数是两个函数指针，第一个函数接收一个参数为jobPhase的函数。第二个函数是空的。
+ */
 func (mr *Master) run(jobName string, files []string, nreduce int,
 	schedule func(phase jobPhase),
 	finish func(),
@@ -163,7 +167,7 @@ func (mr *Master) killWorkers() []int {
 	defer mr.Unlock()
 	ntasks := make([]int, 0, len(mr.workers))
 	for _, w := range mr.workers {
-		debug("Master: shutdown worker %s\n", w)
+		Debug("Master: shutdown worker %s\n", w)
 		var reply ShutdownReply
 		ok := call(w, "Worker.Shutdown", new(struct{}), &reply)
 		if ok == false {

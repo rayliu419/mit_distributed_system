@@ -1,10 +1,25 @@
 package mapreduce
 
+import (
+	"encoding/json"
+	"log"
+	"os"
+	"sort"
+)
+
+/*
+	参数nMap需要的原因是：
+		每个Mapper会给一个Reducer产生一个输入文件。例如4个Mapper，2个Reducer。
+		第0个Mapper产生mapper0-0 mapper0-1 给Reducer0和Reducer1。
+		第1个Mapper产生mapper1-0 mapper1-1 给Reducer0和Reducer1。
+		所以Reducer0要处理mapper0-0, mapper1-0, mapper2-0, mapper3-0。最初我以为4个Mapper为同一个Reducer
+		写同一个文件。
+ */
 func doReduce(
 	jobName string, // the name of the whole MapReduce job
 	reduceTask int, // which reduce task this is
 	outFile string, // write the output here
-	nMap int, // the number of map tasks that were run ("M" in the paper)
+	nMap int,       // the number of map tasks that were run ("M" in the paper)
 	reduceF func(key string, values []string) string,
 ) {
 	//
@@ -44,4 +59,46 @@ func doReduce(
 	//
 	// Your code here (Part I).
 	//
+	var key2valuelist map[string][]string
+	key2valuelist = make(map[string][]string)
+	for i := 0; i < nMap; i++ {
+		fileName := reduceName(jobName, i, reduceTask)
+		fp, err := os.Open(fileName)
+		if err != nil {
+			log.Fatal("doReduce: open intermediate file ", fileName, " error: ", err)
+		}
+		dec := json.NewDecoder(fp)
+		for {
+			var kv KeyValue
+			err := dec.Decode(&kv)
+			if err != nil {
+				break
+			}
+			_, ok := key2valuelist[kv.Key]
+			if !ok {
+				key2valuelist[kv.Key] = make([]string, 0)
+			}
+			key2valuelist[kv.Key] = append(key2valuelist[kv.Key], kv.Value)
+		}
+		fp.Close()
+	}
+	var keys []string
+	for k, _ := range key2valuelist {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	mergeMapFile, err := os.Create(outFile)
+	if err != nil {
+		Debug("create mergeMapFile fail")
+	}
+	defer mergeMapFile.Close()
+	enc := json.NewEncoder(mergeMapFile)
+	for _, key := range keys {
+		k := key
+		reduceValue := reduceF(k, key2valuelist[k])
+		err := enc.Encode(&KeyValue{k, reduceValue})
+		if err != nil {
+			Debug("encode %s-%v error", k, key2valuelist[k])
+		}
+	}
 }

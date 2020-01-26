@@ -96,7 +96,7 @@ func (wk *Worker) DoTask(arg *DoTaskArgs, _ *struct{}) error {
 // Shutdown is called by the master when all work has been completed.
 // We should respond with the number of tasks we have processed.
 func (wk *Worker) Shutdown(_ *struct{}, res *ShutdownReply) error {
-	debug("Shutdown %s\n", wk.name)
+	Debug("Shutdown %s\n", wk.name)
 	wk.Lock()
 	defer wk.Unlock()
 	res.Ntasks = wk.nTasks
@@ -121,7 +121,7 @@ func RunWorker(MasterAddress string, me string,
 	ReduceFunc func(string, []string) string,
 	nRPC int, parallelism *Parallelism,
 ) {
-	debug("RunWorker %s\n", me)
+	Debug("RunWorker %s\n", me)
 	wk := new(Worker)
 	wk.name = me
 	wk.Map = MapFunc
@@ -157,5 +157,5 @@ func RunWorker(MasterAddress string, me string,
 		}
 	}
 	wk.l.Close()
-	debug("RunWorker %s exit\n", me)
+	Debug("RunWorker %s exit\n", me)
 }
